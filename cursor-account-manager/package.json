@@ -1,0 +1,168 @@
+{
+  "name": "cursor-account-manager",
+  "displayName": "Cursor 账号管理",
+  "description": "安全管理 Cursor 多账号、额度和设备，并提供可恢复的 Sand/Grok 补丁。",
+  "version": "3.0.0",
+  "publisher": "local",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kuk-888/cursor-account-manager.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "cursor",
+    "account",
+    "switch",
+    "token",
+    "quota",
+    "sand",
+    "grok"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "icon": "media/icon.png",
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cursor-account-manager",
+          "title": "账号管理",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "cursor-account-manager": [
+        {
+          "type": "webview",
+          "id": "cursor-account-manager.sidePanel",
+          "name": "账号管理"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cursor-account-manager.openPanel",
+        "title": "打开账号管理",
+        "category": "账号管理"
+      },
+      {
+        "command": "cursor-account-manager.sandApply",
+        "title": "一键注入 Sand",
+        "category": "账号管理"
+      },
+      {
+        "command": "cursor-account-manager.applyPatch",
+        "title": "应用补丁",
+        "category": "账号管理"
+      },
+      {
+        "command": "cursor-account-manager.sandRestore",
+        "title": "一键卸载 Sand",
+        "category": "账号管理"
+      },
+      {
+        "command": "cursor-account-manager.setManualToken",
+        "title": "安全设置手动 Token",
+        "category": "账号管理"
+      },
+      {
+        "command": "cursor-account-manager.clearManualToken",
+        "title": "清除手动 Token",
+        "category": "账号管理"
+      },
+      {
+        "command": "cursor-account-manager.manualTokenStatus",
+        "title": "查看手动 Token 状态",
+        "category": "账号管理"
+      },
+      {
+        "command": "cursor-account-manager.restoreAccountState",
+        "title": "恢复最近切号前的登录态",
+        "category": "账号管理"
+      },
+      {
+        "command": "keepchat.openPanel",
+        "title": "打开账号管理（旧命令）",
+        "category": "账号管理"
+      },
+      {
+        "command": "keepchat.sandApply",
+        "title": "一键注入 Sand（旧命令）",
+        "category": "账号管理"
+      },
+      {
+        "command": "keepchat.applyPatch",
+        "title": "应用补丁（旧命令）",
+        "category": "账号管理"
+      },
+      {
+        "command": "keepchat.sandRestore",
+        "title": "一键卸载 Sand（旧命令）",
+        "category": "账号管理"
+      }
+    ],
+    "configuration": {
+      "title": "Cursor 账号管理",
+      "properties": {
+        "cursorAccountManager.networkMode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "manual",
+            "automatic"
+          ],
+          "enumDescriptions": [
+            "完全禁止扩展发起网络请求和后台续期。",
+            "只在用户主动点击授权、刷新、控制台或设备操作时联网。",
+            "允许主动操作，并启用后台额度刷新和临期令牌续期。"
+          ],
+          "default": "manual",
+          "scope": "application",
+          "description": "扩展联网模式。旧 accountUsageEnabled 设置会在首次启动时迁移。"
+        },
+        "cursorAccountManager.cursorOAuthClientId": {
+          "type": "string",
+          "default": "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB",
+          "scope": "application",
+          "description": "Cursor 浏览器登录/续期用的 OAuth client_id。一般无需修改。"
+        },
+        "cursorAccountManager.autoRefreshAccountTokens": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "仅在 automatic 联网模式下，定期检查并续期临期的 client 账号。"
+        },
+        "cursorAccountManager.sandAppRoot": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "可选：Cursor Resources/app 目录。留空则用当前 Cursor 的 appRoot。"
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.0.0",
+    "better-sqlite3": "^13.0.3",
+    "xml2js": "^0.6.2",
+    "yauzl": "^3.4.0"
+  },
+  "scripts": {
+    "build": "node scripts/build-extension.js",
+    "check:syntax": "node scripts/check-syntax.js",
+    "check:dist": "node scripts/check-dist.js",
+    "check:package-files": "node scripts/check-package-files.js",
+    "test": "node scripts/run-tests.js",
+    "verify": "npm run check:syntax && npm test && npm run check:dist && npm run check:package-files",
+    "package": "node scripts/package-extension.js"
+  }
+}

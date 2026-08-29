@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>账号管理 · 界面预览</title>
+  <link rel="stylesheet" href="media/webview.css?v=228">
+  <style>
+    body{display:flex;flex-direction:column;background:#07090d}
+    .previewBar{flex:none;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;background:#0b0e14;border-bottom:1px solid #30394a;color:#9aa4b8;font:12px/1.4 sans-serif}
+    .previewBar b{color:#ecf2ff}
+    .previewBar .size{margin-left:auto;color:#ecf2ff;font-variant-numeric:tabular-nums}
+    .previewBar button{height:24px;padding:0 8px;border:1px solid #30394a;border-radius:6px;background:#13171f;color:#c8d6ee;cursor:pointer}
+    .previewBar button:hover,.previewBar button.on{border-color:#d4a225;color:#ffe9a6}
+    .stage{flex:1;min-height:0;display:flex;justify-content:center;align-items:flex-start;padding:16px;overflow:auto}
+    .phone{width:300px;min-width:240px;max-width:min(560px,100%);height:min(760px, calc(100vh - 88px));min-height:420px;border:1px solid #30394a;border-radius:12px;overflow:hidden;resize:both;box-shadow:0 16px 40px rgba(0,0,0,.35);position:relative}
+    .phone::after{content:'';position:absolute;right:2px;bottom:2px;width:14px;height:14px;pointer-events:none;background:linear-gradient(135deg,transparent 50%,#7b8a9e 50%)}
+    #app{height:100%}
+  </style>
+</head>
+<body>
+  <div class="previewBar">
+    <span>这是<strong>界面预览</strong>。右下角可拖动拉伸。当前账号只靠卡片描边区分。</span>
+    <button type="button" data-w="260">窄 260</button>
+    <button type="button" data-w="300">侧栏 300</button>
+    <button type="button" data-w="360">宽 360</button>
+    <span class="size" id="previewSize">300 × —</span>
+  </div>
+  <div class="stage"><div class="phone" id="phone"><div id="app"></div></div></div>
+  <script>
+    const previewState = {
+        version: '2.2.8-preview',
+      sand: { patched: false, version: '3.4.20', sand: 0, unpatched: 5, error: '' },
+      account: { email: 'main@example.com', label: 'g', plan: 'ultra', planLabel: 'Ultra', enabled: true },
+      accounts: [
+        {
+          id: 'acc_demo1', email: 'main@example.com', userTail: 'a1b2c3d4', type: 'ultra',
+          isCurrent: true, used: 40000, limit: 40000, usageBased: false, hardLimit: null,
+          autoPercent: 66.7, otherPercent: 100, botPercent: 89.4, botHasLimit: true,
+          cycleEnd: new Date(Date.now() + 24 * 86400000).toISOString(),
+          botResetAt: new Date(Date.now() + 3 * 86400000).toISOString(),
+          sessionCount: 1, note: '主力',
+          addedAt: new Date(Date.now() - 4 * 3600 * 1000).toISOString(), tokenType: 'client', noRefresh: false, source: 'deeplogin'
+        },
+        {
+          id: 'acc_demo2', email: 'alt@example.com', userTail: '9f8e7d6c', type: 'pro',
+          isCurrent: false, used: 8000, limit: 20000, usageBased: true, hardLimit: null,
+          autoPercent: 41, otherPercent: 18, botPercent: 12.5, botHasLimit: true,
+          cycleEnd: new Date(Date.now() + 11 * 86400000).toISOString(),
+          botResetAt: new Date(Date.now() + 6 * 86400000).toISOString(),
+          sessionCount: 2, note: '备用 Pro',
+          addedAt: new Date(Date.now() - 86400 * 1000 * 2).toISOString(), tokenType: 'client', noRefresh: false, source: 'deeplogin'
+        },
+        {
+          id: 'acc_demo3', email: 'web-only@example.com', userTail: '11223344', type: 'free',
+          isCurrent: false, used: 0, limit: 0, usageBased: false, hardLimit: null,
+          autoPercent: 8, otherPercent: 0, botPercent: null, botHasLimit: false,
+          sessionCount: 0, note: '',
+          addedAt: new Date(Date.now() - 86400 * 1000 * 3).toISOString(), tokenType: 'web', noRefresh: true, source: 'cookie'
+        }
+      ]
+    };
+    function pushPreviewState() {
+      window.postMessage({ type: 'state', state: previewState }, '*');
+    }
+    window.acquireVsCodeApi = function () {
+      return {
+        postMessage: function (msg) {
+          if (msg && msg.type === 'ready') return;
+          const t = document.querySelector('.previewBar');
+          if (msg && msg.type === 'accountImportAll') {
+            window.postMessage({
+              type: 'importPreview',
+              fileName: 'cursor-accounts-demo.json',
+              added: 1,
+              updated: 2,
+              rows: previewState.accounts.map(function (x, i) {
+                return {
+                  email: x.email,
+                  userTail: x.userTail,
+                  note: x.note || '',
+                  tokenType: x.tokenType,
+                  action: i === 2 ? 'add' : 'update'
+                };
+              })
+            }, '*');
+            if (t) t.innerHTML = '预览：已打开导入预览（演示数据，不会写文件）';
+            return;
+          }
+          if (msg && (msg.type === 'accountExportAll' || msg.type === 'accountImportConfirm' || msg.type === 'accountImportCancel')) {
+            if (t) t.innerHTML = '预览：已拦截 <b>' + msg.type + '</b>（不会读写备份文件）';
+            return;
+          }
+          if (msg && (msg.type === 'copyText' || msg.type === 'accountCopyEmail' || msg.type === 'accountCopyToken')) {
+            const text = msg.type === 'copyText' ? String(msg.text || '') : (msg.type === 'accountCopyToken' ? 'demo-token' : '');
+            if (t) t.innerHTML = '预览：已复制 <b>' + (text || msg.type) + '</b>（浏览器剪贴板未写）';
+            return;
+          }
+          if (msg && msg.type === 'accountSetNote') {
+            const acc = previewState.accounts.find((x) => x.id === msg.id);
+            if (acc) acc.note = String(msg.note || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+            if (t) t.innerHTML = '预览：已保存备注 <b>' + (acc && acc.note ? acc.note : '（已清除）') + '</b>';
+            pushPreviewState();
+            return;
+          }
+          if (t) t.innerHTML = '预览模式已拦截：<b>' + (msg && msg.type || '') + '</b>（不会写 Cursor 登录态）';
+        }
+      };
+    };
+  </script>
+  <script src="media/webview.js"></script>
+  <script>
+    pushPreviewState();
+    (function () {
+      const phone = document.getElementById('phone');
+      const size = document.getElementById('previewSize');
+      function markW(w) {
+        document.querySelectorAll('.previewBar button[data-w]').forEach(function (b) {
+          b.classList.toggle('on', Number(b.getAttribute('data-w')) === w);
+        });
+      }
+      function report() {
+        const w = Math.round(phone.getBoundingClientRect().width);
+        const h = Math.round(phone.getBoundingClientRect().height);
+        if (size) size.textContent = w + ' × ' + h;
+        markW(w);
+      }
+      document.querySelectorAll('.previewBar button[data-w]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          phone.style.width = b.getAttribute('data-w') + 'px';
+          report();
+        });
+      });
+      if (window.ResizeObserver) new ResizeObserver(report).observe(phone);
+      report();
+    })();
+  </script>
+</body>
+</html>

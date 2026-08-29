@@ -1,0 +1,24 @@
+node_modules/
+dist/
+target/
+*.log
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+.idea/
+.vscode/
+coverage/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
+
+# Local capability probes can contain machine-specific paths. Only curated
+# synthetic fixtures under tests/fixtures/omp are committed.
+.m0-probes/
+
+
+# Nested extension artifacts
+*.vsix
+
+.git.bak*
+**/.git.bak*/

@@ -1,0 +1,16 @@
+{
+  "fixture_kind": "synthetic_observation",
+  "observed_on": "2026-08-28",
+  "package": "@oh-my-pi/pi-coding-agent",
+  "version": "18.0.3",
+  "resolved_binary_sha256": "cad1b1b9389ce6844e8bbf7686e279321b2ebc254a1126817f6dede42ce62445",
+  "contains_real_credentials": false,
+  "contains_real_sessions": false,
+  "contains_user_paths": false,
+  "notes": [
+    "All identities, paths, and model records in this fixture directory are invented.",
+    "Help excerpts preserve the capability-bearing tokens observed in OMP 18.0.3.",
+    "The root help omitted --fork even though the target parser and official version source support it."
+  ]
+}
+

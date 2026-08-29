@@ -1,0 +1,26 @@
+{
+  "name": "omp-manager",
+  "version": "0.0.1",
+  "private": true,
+  "description": "A local, capability-driven desktop manager for Oh My Pi",
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "dev": "npm run tauri --workspace=@omp-manager/desktop -- dev --features desktop",
+    "build": "npm run build --workspace=@omp-manager/desktop",
+    "package": "npm run tauri --workspace=@omp-manager/desktop -- build --features desktop",
+    "test": "npm run test:frontend && npm run test:rust",
+    "test:frontend": "npm run test --workspace=@omp-manager/desktop",
+    "test:rust": "cargo test --workspace",
+    "typecheck": "npm run typecheck --workspace=@omp-manager/desktop",
+    "lint": "npm run lint --workspace=@omp-manager/desktop && cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "format:check": "npm run format:check --workspace=@omp-manager/desktop && cargo fmt --all -- --check",
+    "check": "npm run format:check && npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  }
+}
+

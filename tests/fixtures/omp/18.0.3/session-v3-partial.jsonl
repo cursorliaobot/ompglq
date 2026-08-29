@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"00000000-0000-7000-8000-000000000001","timestamp":"2026-08-28T00:00:00.000Z","cwd":"/synthetic/project","title":"Synthetic session"}
+{"type":"message","id":"msg00001","parentId":null,"timestamp":"2026-08-28T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Synthetic prompt"}]}}
+{"type":"unknown_future_entry","id":"future01","parentId":"msg00001","timestamp":"2026-08-28T00:00:02.000Z","payload":{"safe":true}}
+{"type":"credential_pin","id":"pin00001","parentId":"future01","timestamp":"2026-08-28T00:00:03.000Z","provider":"synthetic-provider","hash":"0000000000000000000000000000000000000000000000000000000000000000"}
+{"type":"message","id":"truncated"
+

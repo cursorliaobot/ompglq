@@ -1,0 +1,34 @@
+{
+  "auth.broker.url": {
+    "type": "string",
+    "description": ""
+  },
+  "auth.broker.token": {
+    "type": "string",
+    "description": "",
+    "redacted": true
+  },
+  "modelRoleStorage": {
+    "value": "global",
+    "type": "enum",
+    "description": "Where model selector role assignments are saved"
+  },
+  "modelRoles": {
+    "value": {
+      "default": "synthetic-provider/synthetic-model"
+    },
+    "type": "record",
+    "description": ""
+  },
+  "enabledModels": {
+    "value": [],
+    "type": "array",
+    "description": ""
+  },
+  "disabledProviders": {
+    "value": [],
+    "type": "array",
+    "description": ""
+  }
+}
+

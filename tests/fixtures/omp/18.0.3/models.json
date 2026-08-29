@@ -1,0 +1,22 @@
+{
+  "models": [
+    {
+      "provider": "synthetic-provider",
+      "id": "synthetic-model",
+      "selector": "synthetic-provider/synthetic-model",
+      "name": "Synthetic Model",
+      "contextWindow": 100000,
+      "maxTokens": 12000,
+      "reasoning": true,
+      "thinking": ["low", "medium", "high"],
+      "input": ["text", "image"],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      }
+    }
+  ]
+}
+

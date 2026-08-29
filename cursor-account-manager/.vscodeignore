@@ -1,0 +1,12 @@
+**
+!package.json
+!README.md
+!LICENSE
+!SECURITY.md
+!dist/
+!dist/**
+!media/
+!media/icon.png
+!media/icon.svg
+!media/webview.css
+!media/webview.js

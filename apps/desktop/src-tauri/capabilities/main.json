@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Minimum core permissions for the OMP Manager main window. No shell, filesystem, or HTTP plugin is enabled.",
+  "windows": ["main"],
+  "platforms": ["linux", "windows"],
+  "permissions": ["core:default"]
+}
+

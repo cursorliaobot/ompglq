@@ -1,0 +1,35 @@
+{
+  "version": {
+    "exit_code": 0,
+    "stdout": "omp/18.0.3\n",
+    "stderr": ""
+  },
+  "root_help": {
+    "exit_code": 0,
+    "stdout": "--model=<value>\n--smol=<value>\n--slow=<value>\n--plan=<value>\n--profile=<value>\n--cwd=<value>\n--config=<value>\n--resume=<value>\n--export=<value>\nauth-broker\nauth-gateway\nconfig\nmodels\nupdate\nusage\n",
+    "stderr": ""
+  },
+  "subcommand_help": {
+    "config": "ACTION list|get|set|reset|path|init-xdg\n--json Output JSON\n",
+    "models": "ACTION ls|find|refresh|<provider>\n--json Output JSON\n--no-extensions Disable extension discovery\n",
+    "usage": "--json Output usage reports as JSON\n--redact Redact account emails/ids\n",
+    "auth_broker": "ACTION serve|token|login|logout|import|migrate|status|list\n--json Output JSON\n--dry-run Print actions without executing\n",
+    "auth_gateway": "ACTION serve|token|status|check\n--json Output JSON\n--strict additionally probes a chat-completion endpoint\n",
+    "update": "--check Check for updates without installing\n"
+  },
+  "expected_capabilities": {
+    "profile": true,
+    "cwd": true,
+    "resume": true,
+    "fork_from_root_help_only": false,
+    "export": true,
+    "config_json": true,
+    "models_json": true,
+    "usage_json_redacted": true,
+    "auth_broker": true,
+    "auth_gateway_safe_check": true,
+    "auth_gateway_strict_check": true,
+    "credential_pin_launch_argument": false
+  }
+}
+

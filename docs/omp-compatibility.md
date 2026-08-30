@@ -37,6 +37,8 @@ not executed. Machine-readable commands were exercised only with a synthetic
 | Common launch flags | `omp --help` | 0 | Parse fixed help tokens; never launch during probe |
 | Explicit Profile | root help and parser contain `--profile <name>` | help exit 0 | Available; every launch must pass it explicitly |
 | Explicit cwd | root help contains `--cwd <dir>` | help exit 0 | Available as an argument, never shell text |
+| Model role overrides | root help/source docs contain `--model`, `--smol`, `--slow`, `--plan` | help exit 0 | Probe each fixed flag independently; only exact `provider/modelId` values are emitted |
+| Thinking override | root help/source docs contain `--thinking` | help exit 0 | Probe independently and accept only the closed supported-level set |
 | Resume | root help contains `--resume [id/path]` | help exit 0 | Available; OMP owns reconstruction |
 | Fork | target parser/docs contain `--fork <session>`; 18.0.3 root help omits it | not executed | Do not infer solely from root help; runtime remains unverified/disabled until a side-effect-free probe is available |
 | HTML export | root help contains `--export <session>` | help exit 0 | Available by capability |
@@ -79,9 +81,12 @@ models[]: provider, id, selector, name, contextWindow, maxTokens,
 
 `selector` is the required unique `provider/modelId`. The command returns
 models considered available by OMP, not necessarily the entire bundled
-catalog. Default execution can discover extensions; the manager passes
-`--no-extensions` during a passive probe. `models refresh` can contact remote
-catalogs and write caches, so it is an explicit user action.
+catalog. Default execution can discover extensions and resolve configured
+secrets. The manager therefore runs `--no-extensions` with a random temporary
+HOME, cwd, cache, and agent directory and no provider credentials. This safely
+lists the built-in inventory but intentionally omits Profile/project custom
+models. `models refresh` can contact remote catalogs and write caches, so it is
+an explicit user action.
 
 Custom model configuration is not inert data: OMP supports `!command` secret
 resolution for selected `models.yml` fields. The Manager's YAML preview and
@@ -113,8 +118,21 @@ can be decoded. Parsed `cwd`, not the storage-directory spelling, assigns a
 session to the longest matching registered project root. Automatic Profile
 root discovery and Windows file-handle support remain unavailable. The project
 UI now exposes this cached structural index with metadata search and progressive
-50-row rendering; transcript preview, resume, fork, and export are not yet
-connected.
+50-row rendering plus an on-demand memory-only transcript preview. New and
+resume actions are connected on the verified Linux target. Resume passes the
+authorized absolute JSONL path to OMP's `--resume` argument; OMP, rather than
+the manager, reconstructs the conversation and its stored credential pin.
+Fork and export are not yet connected.
+
+Opening launch settings runs the bounded
+`omp --profile <name> models --json --no-extensions` adapter only inside that
+isolated temporary environment, never in the selected project. The UI marks
+the inventory incomplete. Failure or an empty result leaves “use OMP default”
+available and does not invent model rows. Preparing and executing a launch then
+revalidates digest-backed binary identity, project binding/identity, and
+session identity. The committed `launch_flow_stub` test exercises this path
+without contacting a provider, reading a real Profile, or inheriting unrelated
+provider keys.
 
 A session's artifact directory is the sibling path formed by removing the
 `.jsonl` suffix. Nested agent sessions may live inside it. Global content-
@@ -192,8 +210,10 @@ account launch or silently substitute another account.
 environment choices, but exposes no `profile list` command and no stable
 folder-binding command. Official issue #9655 remained open when checked. The
 manager therefore stores path bindings in its own application data and passes
-`--profile` explicitly. It never writes an account-selecting file into a
-repository.
+`--profile` explicitly. Inherited `OMP_PROFILE`/`PI_PROFILE` are removed from
+the launch environment, while `PI_CODING_AGENT_DIR` remains allow-listed so a
+custom OMP storage root is still respected. It never writes an
+account-selecting file into a repository.
 
 Observed profile layout is default `~/.omp/agent` and named
 `~/.omp/profiles/<name>/agent`. Profile names are limited to 1–64 lower-case

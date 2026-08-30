@@ -42,15 +42,25 @@ product. The current repository provides:
   active-branch reconstruction, append-tail tolerance, role-model metadata,
   secret-free credential-provider projection, and latest-message preview
   budgets;
+- Profile-authorized Linux session discovery, indexing, search, cache
+  freshness, and memory-only transcript preview;
+- user-triggered, bounded model listing plus new/resume settings and a
+  short-lived, single-use LaunchPlan that revalidates the OMP binary, project,
+  binding, and session before execution;
+- a Rust-owned embedded PTY registry with sequenced events, bounded replay,
+  input/resize/interrupt/force-stop commands, reload recovery, and an xterm.js
+  terminal workspace;
+- project-selectable external terminal launch with fixed argv adapters for
+  common Linux terminals, the same allow-listed OMP environment, and no shell
+  command interpolation; the Windows adapter remains behind the existing
+  project-identity verification gate;
 - synthetic fixtures and contract/security tests;
 - architecture, threat-model, development, and compatibility records.
 
-Profile-authorized session directory discovery, incremental indexing, session
-list/preview UI, authorization revalidation for remaining sensitive
-file/process actions, generalized task cancellation and scope locks, LaunchPlan
-execution, and the managed embedded terminal are still pending M1 slices.
-Credential mutation, imports, external terminals, system folder integration,
-and trash remain M2 work. None are represented by fake data.
+Remaining M1 hardening includes Windows project/session handle identity,
+active-run application-exit policy, and generalized task progress/cancellation.
+Credential mutation, imports, system folder integration, trash, and
+configuration writes remain M2 work. None are represented by fake data.
 
 ## Quick start
 

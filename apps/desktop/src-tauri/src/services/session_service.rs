@@ -43,6 +43,13 @@ pub struct SessionRootAuthorizationIntent {
     guard: SessionProfileGuard,
 }
 
+pub(crate) struct SessionLaunchContext {
+    pub preview: ProjectSessionPreview,
+    pub session_path: PathBuf,
+    pub source_identity_json: String,
+    _guard: SessionProfileGuard,
+}
+
 impl std::fmt::Debug for SessionRootAuthorizationIntent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -208,6 +215,50 @@ impl SessionService {
         let result = self.preview_locked(request, project).await;
         drop(guard);
         result
+    }
+
+    pub(crate) async fn launch_context(
+        &self,
+        request: ProjectSessionPreviewRequest,
+    ) -> Result<SessionLaunchContext, DomainError> {
+        validate_project_id(request.project_id)?;
+        validate_session_index_id(request.session_index_id)?;
+        ensure_supported_target(self.target.as_ref())?;
+        let project_id = request.project_id;
+        let project = {
+            let database = self.database.clone();
+            spawn_session_task("load_session_launch_profile", move || {
+                let database = database.database()?;
+                database.with_connection(|connection| load_session_project(connection, project_id))
+            })
+            .await?
+        };
+        let guard = self.acquire_profile(&project.profile)?;
+        let preview = self.preview_locked(request.clone(), project).await?;
+        let database = self.database.clone();
+        let session_index_id = request.session_index_id;
+        let context = spawn_session_task("load_session_launch_context", move || {
+            let database = database.database()?;
+            database.with_connection(|connection| {
+                load_session_preview_context(connection, project_id, session_index_id)
+            })
+        })
+        .await?;
+        if context.profile != preview.profile || context.session_id != preview.session_id {
+            return Err(session_error(
+                "session_launch_scope_changed",
+                "会话范围在生成启动预览时发生变化。",
+                "刷新会话列表并重新生成启动预览。",
+                true,
+                "stage=session_launch_context; scope=changed",
+            ));
+        }
+        Ok(SessionLaunchContext {
+            preview,
+            session_path: PathBuf::from(context.session_path),
+            source_identity_json: context.source_identity_json,
+            _guard: guard,
+        })
     }
 
     async fn preview_locked(

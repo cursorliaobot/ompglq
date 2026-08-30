@@ -62,7 +62,7 @@ still requires Windows implementation and host testing.
 
 The project workbench is enabled only after the metadata runtime reports
 `ready`. Pressing “select folder and add” calls `add_project` with only Profile,
-embedded-terminal, and supported account-policy fields. Rust opens the native
+terminal mode, and supported account-policy fields. Rust opens the native
 folder picker; the frontend never receives or submits an authorization path.
 Cancellation is a successful no-op.
 
@@ -75,8 +75,9 @@ directory/Profile scan occurs.
 
 Project binding saves include the last observed revision. A
 `project_binding_conflict` means another update won and the UI must refresh
-instead of retrying the stale write. `credential_pin` and external terminal
-values are rejected by Rust even if crafted outside the UI.
+instead of retrying the stale write. `credential_pin` remains rejected by Rust
+even if crafted outside the UI; `embedded` and `external` are both accepted
+terminal modes.
 
 Relevant isolated checks are:
 
@@ -321,10 +322,59 @@ Raw CLI text never crosses IPC.
 
 ## PTY work
 
-The M0 spike uses `portable-pty` with a fixed harmless program. M1 PTY work
-must retain direct argument passing, bounded queues, session IDs owned by Rust,
-resize validation, graceful termination before force kill, and cleanup on
-application exit. Windows and Linux behavior need separate CI coverage.
+The fixed harmless `portable-pty` spike remains available. The M1 launch path
+adds a Rust-owned run registry, sequenced event/replay output, bounded input,
+validated resize, Ctrl+C, force termination, and an xterm.js view. Launches
+always use an argv array and an explicit environment-name allowlist; no shell
+profile or command string is evaluated. Model enumeration is the exception that
+starts an OMP subprocess, but it receives a random temporary HOME/cwd and no
+real Profile/project configuration or provider credentials.
+
+Linux executable identity includes a bounded SHA-256 over no-follow file
+handles for both the OMP entrypoint and its supported Bun shebang interpreter.
+Probe/model commands inherit those descriptors. PTY runs retain them and
+execute through the manager's `/proc/<pid>/fd` references because
+`portable-pty` closes ordinary inherited descriptors.
+
+Replay is bounded by both bytes and frame count. Run creation emits a global
+status event after registry insertion, and renderer startup performs a bounded
+run-list reconciliation so an in-flight launch can be reattached after reload.
+The frontend chunks large paste input and only acknowledges PTY dimensions
+after resize IPC succeeds. Backend writes enter a bounded per-run queue; the
+integration stub fills that queue with a non-reading child to verify IPC
+backpressure remains non-blocking. It also leaves inherited PTY/output pipes in
+background children so Unix process-group cleanup and bounded output drain are
+covered.
+
+External launches consume the same short-lived plan and revalidation path.
+Linux detects a fixed list of known terminal executables and uses a
+terminal-specific argv protocol; it never parses `$TERMINAL` or constructs a
+shell command. Desktop-session variables are added to the plan's visible
+environment-name summary, while provider credentials retain the same
+provider-scoped policy as embedded launches. XFCE is forced out of server mode,
+and Linux keeps verified OMP/Bun handles alive briefly so detached terminal
+clients can open `/proc/<manager-pid>/fd/*` paths. The result is deliberately
+reported as detached and is not inserted into the PTY run registry.
+
+Windows prefers Windows Terminal with inherited launch environment and falls
+back to a directly created native console. This source path requires Windows
+host coverage before release support is claimed.
+
+`launch_flow_stub` is a harness-free integration executable that acts as a
+synthetic OMP for version/help, model JSON, and interactive launch. It verifies
+the complete safe path from project registration through model selection,
+single-use LaunchPlan execution, and PTY replay without reading the developer's
+real OMP data. On non-Linux hosts this harness has an explicit no-op entry
+because secure session-root authorization is not yet implemented there:
+
+```bash
+cargo test -p omp-manager --test launch_flow_stub
+```
+
+Linux is the currently verified launch host. The portable abstraction is
+intended to select ConPTY on Windows, but project/session handle identity,
+process-tree behavior, and active-run application-exit policy need separate
+host coverage before Windows launch is claimed.
 
 ## Packaging
 

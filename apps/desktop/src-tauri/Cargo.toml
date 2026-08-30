@@ -28,6 +28,11 @@ name = "omp_probe_stub"
 path = "tests/omp_probe_stub.rs"
 harness = false
 
+[[test]]
+name = "launch_flow_stub"
+path = "tests/launch_flow_stub.rs"
+harness = false
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -39,6 +44,7 @@ regex = "1"
 rusqlite = { version = "0.32.1", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11.0"
 tauri = { version = "2", features = [], optional = true }
 tauri-plugin-dialog = { version = "2.7.2", optional = true }
 tauri-plugin-single-instance = { version = "2.4.3", optional = true }

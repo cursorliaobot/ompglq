@@ -8,3 +8,9 @@ license = "MIT"
 rust-version = "1.85"
 version = "0.0.1"
 
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.test.package.sha2]
+opt-level = 3
+

@@ -75,10 +75,9 @@ export interface ProjectWorkspace {
   readonly known_profiles: readonly KnownProfile[];
 }
 
-/** The M1 UI only exposes capabilities that are implemented end-to-end. */
 export interface ProjectBindingDraft {
   readonly profile: string;
-  readonly terminal_mode: "embedded";
+  readonly terminal_mode: TerminalMode;
   readonly account_policy: "automatic" | "profile";
 }
 

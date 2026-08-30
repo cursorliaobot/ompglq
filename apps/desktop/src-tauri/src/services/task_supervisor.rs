@@ -167,6 +167,20 @@ impl TaskSupervisor {
         Ok(snapshot)
     }
 
+    pub fn latest_probe_report(&self) -> Result<Option<ProbeReport>, DomainError> {
+        let inner = self.lock()?;
+        Ok(inner
+            .operation_order
+            .iter()
+            .rev()
+            .filter_map(|operation_id| inner.operations.get(operation_id))
+            .find_map(|snapshot| {
+                (snapshot.operation.status == OperationStatus::Succeeded)
+                    .then(|| snapshot.result.clone())
+                    .flatten()
+            }))
+    }
+
     pub fn cancel_operation(&self, operation_id: &str) -> Result<OperationSnapshot, DomainError> {
         validate_operation_id(operation_id)?;
         let inner = self.lock()?;
@@ -763,6 +777,7 @@ mod tests {
             }),
             capabilities: Vec::new(),
             diagnostics: Vec::new(),
+            executable_identity: None,
         }
     }
 

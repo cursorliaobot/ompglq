@@ -2,16 +2,67 @@ use std::path::PathBuf;
 
 use crate::adapters::targets::{ExecutionTarget, LocalTarget};
 use crate::domain::{
-    AddProjectRequest, AddProjectResult, DatabaseAvailability, DatabaseStatusReport, DomainError,
-    OmpProbeOperationSnapshot, OpenProjectInEditorRequest, OpenProjectInEditorResult,
-    OperationSnapshot, ProjectSessionPreview, ProjectSessionPreviewRequest,
-    ProjectSessionsSnapshot, ProjectSummary, ProjectWorkspaceSnapshot, PtySpikeReport,
-    UpdateProjectBindingRequest,
+    AddProjectRequest, AddProjectResult, ClosePtyRunRequest, DatabaseAvailability,
+    DatabaseStatusReport, DomainError, ExecuteLaunchPlanRequest, LaunchExecutionResult,
+    LaunchOptions, LaunchOptionsRequest, OmpProbeOperationSnapshot, OpenProjectInEditorRequest,
+    OpenProjectInEditorResult, OperationSnapshot, PrepareLaunchPlanRequest, PreparedLaunchPlan,
+    ProjectSessionPreview, ProjectSessionPreviewRequest, ProjectSessionsSnapshot, ProjectSummary,
+    ProjectWorkspaceSnapshot, PtyOutputBatch, PtyOutputFrame, PtyRunSnapshot, PtySpikeReport,
+    ReadPtyOutputRequest, ResizePtyRequest, TerminatePtyRequest, UpdateProjectBindingRequest,
+    WritePtyInputRequest,
 };
 use crate::infrastructure::db::DatabaseRuntime;
+use crate::infrastructure::pty::PtyEventSink;
 use crate::infrastructure::secrets::redact;
-use crate::services::{ProjectService, SessionService, TaskSupervisor};
+use crate::services::{LaunchService, ProjectService, SessionService, TaskSupervisor};
+use std::sync::mpsc::{sync_channel, SyncSender};
+use std::sync::Arc;
+use tauri::Emitter;
 use tauri_plugin_dialog::DialogExt;
+
+const PTY_OUTPUT_EVENT: &str = "omp-manager-pty-output";
+const PTY_STATUS_EVENT: &str = "omp-manager-pty-status";
+const PTY_EVENT_QUEUE_FRAMES: usize = 64;
+
+#[derive(Clone)]
+struct TauriPtyEventSink {
+    app: tauri::AppHandle,
+    output_sender: SyncSender<PtyOutputFrame>,
+}
+
+impl TauriPtyEventSink {
+    fn new(app: tauri::AppHandle) -> Result<Self, DomainError> {
+        let (output_sender, output_receiver) = sync_channel(PTY_EVENT_QUEUE_FRAMES);
+        let output_app = app.clone();
+        std::thread::Builder::new()
+            .name("omp-pty-events".to_owned())
+            .spawn(move || {
+                while let Ok(frame) = output_receiver.recv() {
+                    let _ = output_app.emit(PTY_OUTPUT_EVENT, frame);
+                }
+            })
+            .map_err(|error| {
+                DomainError::new(
+                    "pty_event_worker_unavailable",
+                    "无法启动终端事件转发器。",
+                    "重新启动应用后重试；终端尚未启动。",
+                    true,
+                    redact(&format!("stage=pty_event_worker; error={error}")),
+                )
+            })?;
+        Ok(Self { app, output_sender })
+    }
+}
+
+impl PtyEventSink for TauriPtyEventSink {
+    fn output(&self, frame: &PtyOutputFrame) {
+        let _ = self.output_sender.try_send(frame.clone());
+    }
+
+    fn status(&self, snapshot: &PtyRunSnapshot) {
+        let _ = self.app.emit(PTY_STATUS_EVENT, snapshot);
+    }
+}
 
 #[tauri::command]
 pub fn database_status(
@@ -196,4 +247,77 @@ pub fn cancel_operation(
 #[tauri::command]
 pub async fn pty_spike() -> Result<PtySpikeReport, DomainError> {
     LocalTarget::default().spawn_pty().await
+}
+
+#[tauri::command]
+pub async fn project_launch_options(
+    request: LaunchOptionsRequest,
+    launches: tauri::State<'_, LaunchService>,
+) -> Result<LaunchOptions, DomainError> {
+    launches.options(request).await
+}
+
+#[tauri::command]
+pub async fn prepare_project_launch(
+    request: PrepareLaunchPlanRequest,
+    launches: tauri::State<'_, LaunchService>,
+) -> Result<PreparedLaunchPlan, DomainError> {
+    launches.prepare(request).await
+}
+
+#[tauri::command]
+pub async fn execute_project_launch(
+    request: ExecuteLaunchPlanRequest,
+    app: tauri::AppHandle,
+    launches: tauri::State<'_, LaunchService>,
+) -> Result<LaunchExecutionResult, DomainError> {
+    let sink = Arc::new(TauriPtyEventSink::new(app)?);
+    launches.execute(request, sink).await
+}
+
+#[tauri::command]
+pub fn list_pty_runs(
+    launches: tauri::State<'_, LaunchService>,
+) -> Result<Vec<PtyRunSnapshot>, DomainError> {
+    launches.list_runs()
+}
+
+#[tauri::command]
+pub fn read_pty_output(
+    request: ReadPtyOutputRequest,
+    launches: tauri::State<'_, LaunchService>,
+) -> Result<PtyOutputBatch, DomainError> {
+    launches.read_output(request)
+}
+
+#[tauri::command]
+pub fn write_pty_input(
+    request: WritePtyInputRequest,
+    launches: tauri::State<'_, LaunchService>,
+) -> Result<(), DomainError> {
+    launches.write_input(request)
+}
+
+#[tauri::command]
+pub fn resize_pty(
+    request: ResizePtyRequest,
+    launches: tauri::State<'_, LaunchService>,
+) -> Result<PtyRunSnapshot, DomainError> {
+    launches.resize(request)
+}
+
+#[tauri::command]
+pub fn terminate_pty(
+    request: TerminatePtyRequest,
+    launches: tauri::State<'_, LaunchService>,
+) -> Result<PtyRunSnapshot, DomainError> {
+    launches.terminate(request)
+}
+
+#[tauri::command]
+pub fn close_pty_run(
+    request: ClosePtyRunRequest,
+    launches: tauri::State<'_, LaunchService>,
+) -> Result<(), DomainError> {
+    launches.close_run(request)
 }

@@ -41,10 +41,21 @@ The domain layer owns serializable, secret-free types:
 - immutable `LaunchPlan` and settings provenance;
 - credential/import capability declarations without credential values.
 
-`LaunchPlan` is modeled during M0 even though execution is deferred to M1. A
-plan carries the target, verified executable, authorized working directory,
-explicit profile, exact model selectors, action, argument array, allow-listed
-environment keys, terminal mode, redacted preview, and warnings.
+`LaunchPlan` is now executed by the M1 launch service. A plan carries the
+target, verified executable, authorized working directory, explicit profile,
+exact model selectors, action, argument array, allow-listed environment keys,
+terminal mode, redacted preview, and warnings. The WebView receives only a
+short-lived UUID, a runtime-salted input fingerprint, the secret-free preview,
+and each permitted environment variable's name/source/presence. Values never
+cross IPC. Rust keeps the executable path, session path, identities, argv, and
+salted environment-value evidence. Execution returns a tagged embedded-PTY or
+detached-external result; the renderer cannot mistake an external launcher PID
+for a managed PTY run.
+Plans expire after two minutes and transition atomically from prepared to
+consumed before asynchronous revalidation starts, using a backend monotonic
+deadline so wall-clock changes or a cancelled IPC future cannot extend or
+strand their lifetime. Double clicks and IPC replay cannot start a second
+process.
 
 ### ExecutionTarget
 
@@ -177,10 +188,10 @@ the application data directory and database/backup files are restricted to
 mode `0700` and `0600` respectively. Windows currently relies on inherited
 local-application-data ACLs; explicit ACL verification and handle-derived
 stable Windows directory identity remain implementation and host-test work.
-Project registration now persists `AuthorizedRoot` rows; revalidation at scan,
-launch, delete, and configuration-write boundaries remains mandatory before
-those later actions can be exposed. The Cursor slice now performs editor-open
-revalidation as described below.
+Project registration now persists `AuthorizedRoot` rows. Session scan, Cursor
+open, LaunchPlan preparation, and final PTY execution revalidate their
+respective roots and identities; delete and configuration-write boundaries
+remain future work.
 
 ### ProjectService
 
@@ -218,8 +229,21 @@ path components, so `/work/app` does not match `/work/application`. This selects
 settings only; it never expands authorization. `SessionService` reuses the same
 longest-component rule solely to assign a parsed session `cwd` to the most
 specific registered project; the separate Profile-kind session-root grant
-still bounds every file read. Sensitive operations other than the fixed Cursor
-action and read-only Linux session scanning remain outside this slice.
+still bounds every file read. The launch service can now start new sessions or
+resume an indexed session in either a managed local PTY or a detached external
+terminal. Credential mutation, delete, and configuration writes remain outside
+this slice.
+
+External terminal launch remains an `ExecutionTarget` operation. `LocalTarget`
+selects only fixed, known adapters and sends OMP executable/path options as
+separate argv elements. Linux supports XFCE Terminal, GNOME Terminal, Konsole,
+Kitty, Alacritty, WezTerm, Foot, and XTerm, prioritizing the current desktop
+when known. It does not interpret `$TERMINAL` or invoke a shell. Windows prefers
+Windows Terminal and otherwise creates a native console directly, but the
+existing Windows project-identity gate keeps that source path disabled until
+host verification is complete. External launches use the plan's environment
+allowlist plus explicitly previewed desktop session variables and remain alive
+independently of the manager.
 
 ### ExternalEditorAdapter
 
@@ -433,13 +457,61 @@ separately sanitized.
 ## PTY lifecycle
 
 `portable-pty::native_pty_system` selects Unix PTY on Linux and ConPTY on
-supported Windows systems. The M0 spike opens a fixed-size PTY, launches a
-fixed harmless child, reads a bounded marker, resizes the master, waits for the
-exit status, and closes all handles. M1 will add a registry of PTY sessions,
-stream events, input, resize, graceful termination, and forced termination.
+supported Windows systems. In addition to the fixed M0 spike, M1 now has a
+Rust-owned registry capped at 32 runs. It starts the verified executable
+directly with a separate argv array, a canonical cwd, and a fixed environment
+name allowlist. Preparation captures only each value's runtime-salted
+fingerprint and presence in Rust; execution re-reads them and rejects a changed
+environment before spawn. Runtime variables are fixed; automatic credential
+selection adds keys only for explicitly selected model providers, while the
+Profile policy inherits no provider key from the manager process. Behavioral
+`PI_*` model/PTY overrides are never forwarded. IPC exposes only names, source,
+and presence.
 
-The frontend will render bytes with xterm.js; it will not parse terminal
-output as HTML.
+Model inventory subprocesses are globally single-flight and run with a
+manager-owned temporary HOME, agent directory, cache, and cwd. Only basic
+process-locale variables survive, so Profile/project `!command` resolvers and
+configuration are not loaded. The resulting built-in inventory is explicitly
+marked incomplete for custom models. Overlapping requests degrade to a
+retryable warning rather than spawning unbounded OMP children.
+
+OMP probing records canonical path, size, nanosecond timestamp, SHA-256, and
+Unix device/inode from a no-follow file handle. A supported Bun shebang adds
+the same evidence for the resolved interpreter. Model lookup, plan preparation,
+execution revalidation, and the PTY boundary compare the complete chain instead
+of trusting millisecond mtime or `PATH` alone. On Linux, bounded subprocesses
+execute the Bun/OMP descriptors through `/proc/self/fd` after clearing
+close-on-exec in the child. Because `portable-pty` closes inherited descriptors,
+PTY launch instead uses the manager's `/proc/<manager-pid>/fd` references and
+retains both open files for the run lifetime. These forms pin verified inodes
+through `exec`; cwd and resume handoff remain path-based.
+
+Reader threads split output into 8 KiB frames, retain at most 2 MiB and 4,096
+frames per run, assign monotonic sequence numbers, and feed a 64-frame
+nonblocking Tauri event queue. Event overflow is deliberately dropped because
+the bounded replay IPC is authoritative; the WebView drains an initial replay
+high-water mark, fills sequence gaps by polling, and reports an evicted prefix.
+Large paste input is split into ordered 64 KiB calls; resize dimensions are
+bounded and acknowledged before the frontend suppresses duplicate updates.
+Each run owns a bounded 16-message input queue and writer thread, so a child
+that stops reading cannot block a synchronous Tauri command. Ctrl+C enters the
+same queue. Forced Unix termination targets only a PTY process-group leader
+that equals the spawned child identity, with the portable child killer as the
+platform fallback. After the main child exits, the runtime closes control/input
+handles, waits for reader EOF, then terminates remaining Unix group members
+with a bounded TERM/KILL sequence. A run is not closeable or prunable until
+reader EOF. Exit code/signal and terminal state remain
+queryable together with the immutable Profile/model launch context. The
+frontend renders raw bytes with xterm.js and never treats them as HTML.
+
+Completed tabs close through a backend command that removes the Rust run
+record and replay buffer; a running child cannot be dismissed without first
+being interrupted or force-terminated.
+
+Run creation emits a global status event only after the backend registry entry
+exists. A new WebView subscribes before listing runs and performs a bounded
+startup reconciliation window, so a launch already revalidating during reload
+can be reattached without a second process start.
 
 ## Persistence status
 
@@ -455,8 +527,10 @@ database or sidecars change. The schema contains metadata columns only and
 never opens OMP-owned `agent.db`. The project repository and initial native
 authorization grant are connected. Linux Profile session-root authorization,
 handle-anchored read-only scanning, metadata-only session indexing, cache
-freshness, and root identity revalidation are connected; configuration/process
-actions and capability caching remain subsequent M1 slices.
+freshness, root identity revalidation, on-demand transcript preview, model
+listing, one-time LaunchPlan execution, and the managed PTY are connected.
+Configuration mutation and durable capability caching remain subsequent
+slices.
 `operation_history` is connected for OMP probe
 lifecycle/summary persistence and stale-row reconciliation; additional task
 types will reuse the same repository contract. Session content indexing remains
@@ -479,10 +553,13 @@ never contain credentials, and are passed with `--config` as an argument.
 
 ## Milestone boundary
 
-M0 proved architecture and compatibility. M1 is in progress: its persistence,
-background probe, native project registration, and fixed in-app Cursor action
-are connected, and the bounded session-format parser is complete. Profile
-session-directory authorization/discovery, indexing, list/preview UI, launch
-settings, LaunchPlan, and managed PTY remain. M2 adds credential management,
-import, diagnostics, external terminals, trash, installation/update, system
+M0 proved architecture and compatibility. The M1 vertical path is now
+connected on the verified Linux target: persistence, background probe, native
+project registration, Profile session-root authorization, indexing/list/
+preview, model selection, new/resume settings, one-time LaunchPlan preview,
+managed PTY, detached external-terminal launch, and the fixed Cursor action.
+Remaining M1 hardening includes
+Windows handle/ACL evidence, application-exit policy for active runs, and
+additional background-operation progress/cancellation. M2 adds credential
+management, import, trash, installation/update, system
 folder integration, and release UX.

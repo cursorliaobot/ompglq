@@ -7,6 +7,10 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use crate::domain::{DomainError, PtySpikeReport};
 use crate::infrastructure::secrets::redact_bytes;
 
+mod runtime;
+
+pub use runtime::{NoopPtyEventSink, PtyEventSink, PtyRuntime};
+
 const MARKER: &str = "OMP_MANAGER_PTY_OK";
 const MAX_OUTPUT_BYTES: usize = 16 * 1024;
 const CHILD_TIMEOUT: Duration = Duration::from_secs(4);

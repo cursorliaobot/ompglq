@@ -143,8 +143,10 @@ interface ProjectSessionsPanelProps {
   readonly profile: string;
   readonly bindingRevision: number;
   readonly disabled: boolean;
+  readonly resumeDisabled: boolean;
   readonly locale: Locale;
   readonly t: Translate;
+  readonly onResume: (session: ProjectSessionSummary) => void;
 }
 
 interface ProjectSessionsContentProps {
@@ -153,6 +155,7 @@ interface ProjectSessionsContentProps {
   readonly matchingCount: number;
   readonly searchQuery: string;
   readonly disabled: boolean;
+  readonly resumeDisabled: boolean;
   readonly locale: Locale;
   readonly t: Translate;
   readonly onSearchChange: (value: string) => void;
@@ -160,6 +163,7 @@ interface ProjectSessionsContentProps {
   readonly onAuthorize: () => void;
   readonly onScan: () => void;
   readonly onOpenPreview: (session: ProjectSessionSummary) => void;
+  readonly onResume: (session: ProjectSessionSummary) => void;
   readonly onClosePreview: () => void;
   readonly onDismissMutationFailure: () => void;
   readonly onShowMore: () => void;
@@ -246,19 +250,23 @@ function SessionFailureNotice({
 function SessionRow({
   session,
   previewDisabled,
+  resumeDisabled,
   previewLoading,
   previewOpen,
   locale,
   t,
   onPreview,
+  onResume,
 }: {
   readonly session: ProjectSessionSummary;
   readonly previewDisabled: boolean;
+  readonly resumeDisabled: boolean;
   readonly previewLoading: boolean;
   readonly previewOpen: boolean;
   readonly locale: Locale;
   readonly t: Translate;
   readonly onPreview: (session: ProjectSessionSummary) => void;
+  readonly onResume: (session: ProjectSessionSummary) => void;
 }) {
   return (
     <li>
@@ -277,6 +285,14 @@ function SessionRow({
                 {t(freshnessKeys[session.freshness])}
               </span>
             </div>
+            <button
+              className="primary-button session-resume-button"
+              type="button"
+              disabled={resumeDisabled || session.read_status === "unreadable"}
+              onClick={() => onResume(session)}
+            >
+              {t("project.sessions.resume")}
+            </button>
             <button
               className="text-button"
               type="button"
@@ -492,6 +508,7 @@ export function ProjectSessionsContent({
   matchingCount,
   searchQuery,
   disabled,
+  resumeDisabled,
   locale,
   t,
   onSearchChange,
@@ -499,6 +516,7 @@ export function ProjectSessionsContent({
   onAuthorize,
   onScan,
   onOpenPreview,
+  onResume,
   onClosePreview,
   onDismissMutationFailure,
   onShowMore,
@@ -725,11 +743,13 @@ export function ProjectSessionsContent({
                       key={session.session_index_id}
                       session={session}
                       previewDisabled={controlsDisabled}
+                      resumeDisabled={controlsDisabled || resumeDisabled}
                       previewLoading={previewLoading}
                       previewOpen={previewOpen}
                       locale={locale}
                       t={t}
                       onPreview={onOpenPreview}
+                      onResume={onResume}
                     />
                   );
                 })}
@@ -757,8 +777,10 @@ export function ProjectSessionsPanel({
   profile,
   bindingRevision,
   disabled,
+  resumeDisabled,
   locale,
   t,
+  onResume,
 }: ProjectSessionsPanelProps) {
   const [expanded, setExpanded] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -821,6 +843,7 @@ export function ProjectSessionsPanel({
           matchingCount={matchingSessions.length}
           searchQuery={searchQuery}
           disabled={disabled}
+          resumeDisabled={resumeDisabled}
           locale={locale}
           t={t}
           onSearchChange={setSearchQuery}
@@ -828,6 +851,7 @@ export function ProjectSessionsPanel({
           onAuthorize={controller.authorize}
           onScan={controller.scan}
           onOpenPreview={controller.openPreview}
+          onResume={onResume}
           onClosePreview={controller.closePreview}
           onDismissMutationFailure={controller.clearMutationFailure}
           onShowMore={() => setVisibleCount((value) => value + PAGE_SIZE)}

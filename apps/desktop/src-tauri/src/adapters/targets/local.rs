@@ -1,6 +1,18 @@
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::process::Stdio;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_os = "linux")]
+use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -8,21 +20,53 @@ use serde_json::json;
 
 use super::{
     AllowedFileRead, AllowedJsonlListing, AllowedJsonlListingRequest, AllowedReadRequest,
-    CanonicalDirectory, ExecutionTarget, GitIdentity, TargetHealth,
+    CanonicalDirectory, ExecutionTarget, ExternalTerminalProcess, GitIdentity, TargetHealth,
 };
-use crate::domain::{DomainError, PtySpikeReport};
-use crate::infrastructure::process::{OmpProbeCommand, OmpProcessOutput, ProcessRunner};
+use crate::domain::{DomainError, ExecutableIdentityEvidence, LaunchPlan, PtySpikeReport};
+use crate::infrastructure::process::{
+    open_verified_executable, resolve_executable_on_path, OmpJsonOutput, OmpProbeCommand,
+    OmpProcessOutput, OpenedExecutable, ProcessRunner,
+};
 use crate::infrastructure::pty::run_fixed_pty_spike;
 use crate::infrastructure::secrets::redact;
 
-#[derive(Debug, Clone, Default)]
+#[cfg(target_os = "linux")]
+const MAXIMUM_EXTERNAL_EXECUTABLE_LEASES: usize = 16;
+#[cfg(target_os = "linux")]
+const EXTERNAL_EXECUTABLE_LEASE: Duration = Duration::from_secs(30);
+
+#[derive(Clone)]
 pub struct LocalTarget {
     runner: ProcessRunner,
+    #[cfg(target_os = "linux")]
+    external_executable_leases: Arc<Mutex<HashMap<u64, OpenedExecutable>>>,
+    #[cfg(target_os = "linux")]
+    next_external_lease_id: Arc<AtomicU64>,
+}
+
+impl std::fmt::Debug for LocalTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalTarget")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for LocalTarget {
+    fn default() -> Self {
+        Self::new(ProcessRunner::default())
+    }
 }
 
 impl LocalTarget {
     pub fn new(runner: ProcessRunner) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            #[cfg(target_os = "linux")]
+            external_executable_leases: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(target_os = "linux")]
+            next_external_lease_id: Arc::new(AtomicU64::new(1)),
+        }
     }
 }
 
@@ -112,9 +156,24 @@ impl ExecutionTarget for LocalTarget {
     async fn run_omp(
         &self,
         executable: &Path,
+        expected_identity: &ExecutableIdentityEvidence,
         command: OmpProbeCommand,
     ) -> Result<OmpProcessOutput, DomainError> {
-        self.runner.run_omp(executable, command).await
+        self.runner
+            .run_omp(executable, expected_identity, command)
+            .await
+    }
+
+    async fn run_omp_models_json(
+        &self,
+        executable: &Path,
+        expected_identity: &ExecutableIdentityEvidence,
+        profile: &str,
+        project: &Path,
+    ) -> Result<OmpJsonOutput, DomainError> {
+        self.runner
+            .run_omp_models_json(executable, expected_identity, profile, project)
+            .await
     }
 
     async fn read_allowed_file(
@@ -165,6 +224,34 @@ impl ExecutionTarget for LocalTarget {
             })?
     }
 
+    async fn open_external_terminal(
+        &self,
+        plan: &LaunchPlan,
+        expected_identity: &ExecutableIdentityEvidence,
+    ) -> Result<ExternalTerminalProcess, DomainError> {
+        #[cfg(target_os = "linux")]
+        {
+            return self
+                .open_linux_external_terminal(plan, expected_identity)
+                .await;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return open_windows_external_terminal(plan, expected_identity).await;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            let _ = (plan, expected_identity);
+            Err(external_terminal_error(
+                "external_terminal_platform_unsupported",
+                "当前平台尚不支持外部终端。",
+                "改用内嵌终端。",
+                false,
+                "the local target has no external terminal adapter for this platform",
+            ))
+        }
+    }
+
     async fn health_check(&self) -> Result<TargetHealth, DomainError> {
         Ok(TargetHealth {
             target_id: self.target_id().to_owned(),
@@ -172,6 +259,457 @@ impl ExecutionTarget for LocalTarget {
             diagnostics: Vec::new(),
         })
     }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum LinuxTerminalProtocol {
+    Xfce,
+    Gnome,
+    Konsole,
+    Kitty,
+    Alacritty,
+    WezTerm,
+    Foot,
+    Xterm,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+struct LinuxTerminalCandidate {
+    id: &'static str,
+    executable: &'static str,
+    protocol: LinuxTerminalProtocol,
+}
+
+#[cfg(target_os = "linux")]
+const LINUX_TERMINAL_CANDIDATES: &[LinuxTerminalCandidate] = &[
+    LinuxTerminalCandidate {
+        id: "xfce4-terminal",
+        executable: "xfce4-terminal",
+        protocol: LinuxTerminalProtocol::Xfce,
+    },
+    LinuxTerminalCandidate {
+        id: "gnome-terminal",
+        executable: "gnome-terminal",
+        protocol: LinuxTerminalProtocol::Gnome,
+    },
+    LinuxTerminalCandidate {
+        id: "konsole",
+        executable: "konsole",
+        protocol: LinuxTerminalProtocol::Konsole,
+    },
+    LinuxTerminalCandidate {
+        id: "kitty",
+        executable: "kitty",
+        protocol: LinuxTerminalProtocol::Kitty,
+    },
+    LinuxTerminalCandidate {
+        id: "alacritty",
+        executable: "alacritty",
+        protocol: LinuxTerminalProtocol::Alacritty,
+    },
+    LinuxTerminalCandidate {
+        id: "wezterm",
+        executable: "wezterm",
+        protocol: LinuxTerminalProtocol::WezTerm,
+    },
+    LinuxTerminalCandidate {
+        id: "foot",
+        executable: "foot",
+        protocol: LinuxTerminalProtocol::Foot,
+    },
+    LinuxTerminalCandidate {
+        id: "xterm",
+        executable: "xterm",
+        protocol: LinuxTerminalProtocol::Xterm,
+    },
+];
+
+#[cfg(target_os = "linux")]
+impl LocalTarget {
+    async fn open_linux_external_terminal(
+        &self,
+        plan: &LaunchPlan,
+        expected_identity: &ExecutableIdentityEvidence,
+    ) -> Result<ExternalTerminalProcess, DomainError> {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return Err(external_terminal_error(
+                "external_terminal_session_unavailable",
+                "当前进程没有可用的图形桌面会话。",
+                "从 Linux 桌面启动 OMP Manager，或改用内嵌终端。",
+                true,
+                "stage=desktop_session display=absent wayland_display=absent",
+            ));
+        }
+        let omp = open_verified_executable(plan.omp_executable()).map_err(|error| {
+            external_terminal_error(
+                "external_terminal_omp_unavailable",
+                "无法为外部终端固定当前 OMP 可执行文件。",
+                "重新检测 OMP 后再试，或改用内嵌终端。",
+                true,
+                &format!("stage=open_omp error={}", redact(&error.to_string())),
+            )
+        })?;
+        if omp.evidence() != expected_identity {
+            return Err(external_terminal_error(
+                "external_terminal_omp_changed",
+                "OMP 可执行文件在外部终端启动前发生变化。",
+                "重新检测 OMP 并生成新的启动预览。",
+                true,
+                "stage=verify_omp identity=mismatch",
+            ));
+        }
+
+        let (candidate, terminal) = select_linux_terminal()?;
+        let command_path = omp.parent_command_path();
+        let command_prefix = omp.parent_command_arguments();
+        let arguments = linux_terminal_arguments(
+            candidate.protocol,
+            plan.cwd(),
+            &command_path,
+            &command_prefix,
+            plan.args(),
+        );
+
+        let lease_id = self.next_external_lease_id.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut leases = self.external_executable_leases.lock().map_err(|_| {
+                external_terminal_error(
+                    "external_terminal_lease_unavailable",
+                    "外部终端启动资源暂不可用。",
+                    "稍后重试，或改用内嵌终端。",
+                    true,
+                    "stage=lease_registry state=poisoned",
+                )
+            })?;
+            if leases.len() >= MAXIMUM_EXTERNAL_EXECUTABLE_LEASES {
+                return Err(external_terminal_error(
+                    "external_terminal_launch_busy",
+                    "正在启动的外部终端数量已达到安全上限。",
+                    "等待已有外部终端完成启动后重试。",
+                    true,
+                    "stage=lease_registry capacity=exhausted",
+                ));
+            }
+            leases.insert(lease_id, omp);
+        }
+
+        let mut command = tokio::process::Command::new(terminal.command_path());
+        terminal.configure_tokio_command(&mut command);
+        command
+            .args(arguments)
+            .current_dir(plan.cwd())
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(false);
+        apply_launch_environment(&mut command, plan.env_allowlist());
+
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                self.remove_external_lease(lease_id);
+                return Err(external_terminal_error(
+                    "external_terminal_spawn_failed",
+                    "外部终端未能启动。",
+                    "检查桌面会话后重试，或改用内嵌终端。",
+                    true,
+                    &format!(
+                        "stage=spawn terminal={} error={}",
+                        candidate.id,
+                        redact(&error.to_string())
+                    ),
+                ));
+            }
+        };
+        let process_id = child.id();
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+        });
+
+        let leases = Arc::clone(&self.external_executable_leases);
+        tokio::spawn(async move {
+            tokio::time::sleep(EXTERNAL_EXECUTABLE_LEASE).await;
+            if let Ok(mut leases) = leases.lock() {
+                leases.remove(&lease_id);
+            }
+        });
+
+        Ok(ExternalTerminalProcess {
+            terminal_id: candidate.id.to_owned(),
+            process_id,
+        })
+    }
+
+    fn remove_external_lease(&self, lease_id: u64) {
+        if let Ok(mut leases) = self.external_executable_leases.lock() {
+            leases.remove(&lease_id);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn select_linux_terminal() -> Result<(LinuxTerminalCandidate, OpenedExecutable), DomainError> {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let preferred = if desktop.contains("xfce") {
+        Some("xfce4-terminal")
+    } else if desktop.contains("gnome") {
+        Some("gnome-terminal")
+    } else if desktop.contains("kde") || desktop.contains("plasma") {
+        Some("konsole")
+    } else {
+        None
+    };
+    let candidates = preferred.into_iter().chain(
+        LINUX_TERMINAL_CANDIDATES
+            .iter()
+            .map(|candidate| candidate.id),
+    );
+
+    for id in candidates {
+        let Some(candidate) = LINUX_TERMINAL_CANDIDATES
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .copied()
+        else {
+            continue;
+        };
+        let Some(path) = resolve_executable_on_path(candidate.executable) else {
+            continue;
+        };
+        let Ok(path) = std::fs::canonicalize(path) else {
+            continue;
+        };
+        if let Ok(terminal) = open_verified_executable(&path) {
+            return Ok((candidate, terminal));
+        }
+    }
+
+    Err(external_terminal_error(
+        "external_terminal_not_found",
+        "未检测到受支持的 Linux 外部终端。",
+        "安装 XFCE Terminal、GNOME Terminal、Konsole、Kitty、Alacritty、WezTerm、Foot 或 XTerm，或改用内嵌终端。",
+        true,
+        "stage=terminal_probe result=no_verified_candidate",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_terminal_arguments(
+    protocol: LinuxTerminalProtocol,
+    cwd: &Path,
+    command: &Path,
+    command_prefix: &[PathBuf],
+    arguments: &[String],
+) -> Vec<OsString> {
+    let mut result = Vec::new();
+    match protocol {
+        LinuxTerminalProtocol::Xfce => {
+            result.extend([
+                OsString::from("--disable-server"),
+                prefixed_os_string("--working-directory=", cwd.as_os_str()),
+                OsString::from("--title=OMP Manager"),
+                OsString::from("--execute"),
+            ]);
+        }
+        LinuxTerminalProtocol::Gnome => {
+            result.extend([
+                OsString::from("--wait"),
+                prefixed_os_string("--working-directory=", cwd.as_os_str()),
+                OsString::from("--title=OMP Manager"),
+                OsString::from("--"),
+            ]);
+        }
+        LinuxTerminalProtocol::Konsole => {
+            result.extend([
+                OsString::from("--separate"),
+                OsString::from("--workdir"),
+                cwd.as_os_str().to_owned(),
+                OsString::from("-p"),
+                OsString::from("tabtitle=OMP Manager"),
+                OsString::from("-e"),
+            ]);
+        }
+        LinuxTerminalProtocol::Kitty => {
+            result.extend([
+                OsString::from("--directory"),
+                cwd.as_os_str().to_owned(),
+                OsString::from("--title"),
+                OsString::from("OMP Manager"),
+                OsString::from("--"),
+            ]);
+        }
+        LinuxTerminalProtocol::Alacritty => {
+            result.extend([
+                OsString::from("--working-directory"),
+                cwd.as_os_str().to_owned(),
+                OsString::from("--title"),
+                OsString::from("OMP Manager"),
+                OsString::from("-e"),
+            ]);
+        }
+        LinuxTerminalProtocol::WezTerm => {
+            result.extend([
+                OsString::from("start"),
+                OsString::from("--cwd"),
+                cwd.as_os_str().to_owned(),
+                OsString::from("--"),
+            ]);
+        }
+        LinuxTerminalProtocol::Foot => {
+            result.extend([
+                prefixed_os_string("--working-directory=", cwd.as_os_str()),
+                OsString::from("--title=OMP Manager"),
+                OsString::from("--"),
+            ]);
+        }
+        LinuxTerminalProtocol::Xterm => {
+            result.extend([
+                OsString::from("-T"),
+                OsString::from("OMP Manager"),
+                OsString::from("-e"),
+            ]);
+        }
+    }
+    result.push(command.as_os_str().to_owned());
+    result.extend(
+        command_prefix
+            .iter()
+            .map(|argument| argument.as_os_str().to_owned()),
+    );
+    result.extend(arguments.iter().map(OsString::from));
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn prefixed_os_string(prefix: &str, value: &std::ffi::OsStr) -> OsString {
+    let mut result = OsString::from(prefix);
+    result.push(value);
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn apply_launch_environment(command: &mut tokio::process::Command, allowlist: &[String]) {
+    for name in allowlist {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn open_windows_external_terminal(
+    plan: &LaunchPlan,
+    expected_identity: &ExecutableIdentityEvidence,
+) -> Result<ExternalTerminalProcess, DomainError> {
+    use std::os::windows::process::CommandExt as _;
+
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+    let omp = open_verified_executable(plan.omp_executable()).map_err(|error| {
+        external_terminal_error(
+            "external_terminal_omp_unavailable",
+            "无法为外部终端固定当前 OMP 可执行文件。",
+            "重新检测 OMP 后再试，或改用内嵌终端。",
+            true,
+            &format!("stage=open_omp error={}", redact(&error.to_string())),
+        )
+    })?;
+    if omp.evidence() != expected_identity {
+        return Err(external_terminal_error(
+            "external_terminal_omp_changed",
+            "OMP 可执行文件在外部终端启动前发生变化。",
+            "重新检测 OMP 并生成新的启动预览。",
+            true,
+            "stage=verify_omp identity=mismatch",
+        ));
+    }
+
+    let (terminal_id, mut command) = if let Some(path) = resolve_executable_on_path("wt") {
+        let terminal = open_verified_executable(&path).map_err(|error| {
+            external_terminal_error(
+                "external_terminal_probe_failed",
+                "检测到 Windows Terminal，但无法安全打开它。",
+                "修复 Windows Terminal，或改用内嵌终端。",
+                true,
+                &format!(
+                    "stage=open_windows_terminal error={}",
+                    redact(&error.to_string())
+                ),
+            )
+        })?;
+        let mut command = tokio::process::Command::new(terminal.command_path());
+        terminal.configure_tokio_command(&mut command);
+        command
+            .arg("-w")
+            .arg("new")
+            .arg("new-tab")
+            .arg("--inheritEnvironment")
+            .arg("-d")
+            .arg(plan.cwd())
+            .arg("--title")
+            .arg("OMP Manager")
+            .arg("--")
+            .arg(omp.command_path())
+            .args(omp.command_arguments())
+            .args(plan.args());
+        ("windows-terminal", command)
+    } else {
+        let mut command = tokio::process::Command::new(omp.command_path());
+        omp.configure_tokio_command(&mut command);
+        command.args(omp.command_arguments()).args(plan.args());
+        command.as_std_mut().creation_flags(CREATE_NEW_CONSOLE);
+        ("windows-console", command)
+    };
+    command
+        .current_dir(plan.cwd())
+        .env_clear()
+        .kill_on_drop(false);
+    for name in plan.env_allowlist() {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    let mut child = command.spawn().map_err(|error| {
+        external_terminal_error(
+            "external_terminal_spawn_failed",
+            "外部终端未能启动。",
+            "检查桌面会话后重试，或改用内嵌终端。",
+            true,
+            &format!(
+                "stage=spawn terminal={terminal_id} error={}",
+                redact(&error.to_string())
+            ),
+        )
+    })?;
+    let process_id = child.id();
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    });
+    Ok(ExternalTerminalProcess {
+        terminal_id: terminal_id.to_owned(),
+        process_id,
+    })
+}
+
+fn external_terminal_error(
+    code: &'static str,
+    message: &'static str,
+    suggestion: &'static str,
+    retryable: bool,
+    technical_detail: &str,
+) -> DomainError {
+    DomainError::new(
+        code,
+        message,
+        suggestion,
+        retryable,
+        redact(technical_detail),
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -1640,6 +2178,53 @@ fn project_path_error(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn external_terminal_protocols_keep_paths_and_arguments_as_distinct_argv() {
+        let cwd = Path::new("/tmp/project ; $(touch should-not-run)");
+        let command = Path::new("/proc/42/fd/7");
+        let prefix = vec![PathBuf::from("/proc/42/fd/8")];
+        let omp_arguments = vec![
+            "--cwd".to_owned(),
+            cwd.display().to_string(),
+            "--model".to_owned(),
+            "provider/model;echo nope".to_owned(),
+        ];
+
+        for protocol in [
+            LinuxTerminalProtocol::Xfce,
+            LinuxTerminalProtocol::Gnome,
+            LinuxTerminalProtocol::Konsole,
+            LinuxTerminalProtocol::Kitty,
+            LinuxTerminalProtocol::Alacritty,
+            LinuxTerminalProtocol::WezTerm,
+            LinuxTerminalProtocol::Foot,
+            LinuxTerminalProtocol::Xterm,
+        ] {
+            let arguments =
+                linux_terminal_arguments(protocol, cwd, command, &prefix, &omp_arguments);
+            let expected_tail = [
+                command.as_os_str(),
+                prefix[0].as_os_str(),
+                std::ffi::OsStr::new("--cwd"),
+                cwd.as_os_str(),
+                std::ffi::OsStr::new("--model"),
+                std::ffi::OsStr::new("provider/model;echo nope"),
+            ];
+            assert_eq!(
+                arguments
+                    .iter()
+                    .rev()
+                    .take(expected_tail.len())
+                    .rev()
+                    .map(OsString::as_os_str)
+                    .collect::<Vec<_>>(),
+                expected_tail
+            );
+            assert!(!arguments.iter().any(|argument| argument == "-c"));
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

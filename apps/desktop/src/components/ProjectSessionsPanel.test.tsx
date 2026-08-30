@@ -100,6 +100,7 @@ function render(
   matchingCount = visibleSessions.length,
   translator = t,
   locale: "zh-CN" | "en-US" = "zh-CN",
+  resumeDisabled = false,
 ): string {
   return renderToStaticMarkup(
     <ProjectSessionsContent
@@ -108,6 +109,7 @@ function render(
       matchingCount={matchingCount}
       searchQuery=""
       disabled={false}
+      resumeDisabled={resumeDisabled}
       locale={locale}
       t={translator}
       onSearchChange={vi.fn()}
@@ -115,6 +117,7 @@ function render(
       onAuthorize={vi.fn()}
       onScan={vi.fn()}
       onOpenPreview={vi.fn()}
+      onResume={vi.fn()}
       onClosePreview={vi.fn()}
       onDismissMutationFailure={vi.fn()}
       onShowMore={vi.fn()}
@@ -145,6 +148,22 @@ describe("ProjectSessionsContent", () => {
     expect(markup).toContain("最新");
     expect(markup).toContain('role="status"');
     expect(markup).toContain("匹配会话数 / 会话总数: 1 / 1");
+  });
+
+  it("keeps preview available while launch eligibility disables resume", () => {
+    const markup = render(
+      state(snapshot("active", [session()])),
+      undefined,
+      undefined,
+      t,
+      "zh-CN",
+      true,
+    );
+
+    expect(markup).toContain(
+      '<button class="primary-button session-resume-button" type="button" disabled="">用 OMP 恢复</button>',
+    );
+    expect(markup).toContain('aria-expanded="false"');
   });
 
   it("shows freshness, parser warnings, diagnostics, and progressive-list controls", () => {

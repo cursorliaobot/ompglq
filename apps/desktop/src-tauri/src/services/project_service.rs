@@ -32,6 +32,14 @@ pub struct ProjectService {
     target: Arc<dyn ExecutionTarget>,
     editor: Arc<dyn ExternalEditorAdapter>,
     opening_projects: Arc<Mutex<HashSet<i64>>>,
+    active_project_scopes: Arc<Mutex<HashSet<i64>>>,
+}
+
+pub(crate) struct ProjectLaunchContext {
+    pub project: ProjectSummary,
+    pub canonical_path: PathBuf,
+    pub stable_identity_json: String,
+    _guard: ProjectScopeGuard,
 }
 
 impl fmt::Debug for ProjectService {
@@ -59,6 +67,7 @@ impl ProjectService {
             target,
             editor,
             opening_projects: Arc::new(Mutex::new(HashSet::new())),
+            active_project_scopes: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -176,6 +185,7 @@ impl ProjectService {
                 "stage=update_binding; revision=out_of_range",
             ));
         }
+        let _guard = self.acquire_project_scope(request.project_id)?;
 
         let database = self.database.clone();
         spawn_database_task("update_binding", move || {
@@ -183,6 +193,98 @@ impl ProjectService {
             update_project_binding(&database, request)
         })
         .await
+    }
+
+    pub(crate) async fn launch_context(
+        &self,
+        project_id: i64,
+        expected_binding_revision: u64,
+    ) -> Result<ProjectLaunchContext, DomainError> {
+        validate_project_id(project_id)?;
+        let guard = self.acquire_project_scope(project_id)?;
+        if expected_binding_revision == 0 || expected_binding_revision > i64::MAX as u64 {
+            return Err(project_error(
+                "launch_binding_revision_invalid",
+                "启动请求包含无效的项目绑定版本。",
+                "刷新项目列表后重新生成启动预览。",
+                false,
+                "stage=launch_context; binding_revision=invalid",
+            ));
+        }
+        if self.target.target_id() != TARGET_ID {
+            return Err(project_error(
+                "launch_target_unavailable",
+                "当前里程碑仅支持在本机启动 OMP。",
+                "请选择本机项目。",
+                false,
+                "stage=launch_context; target=non_local",
+            ));
+        }
+        #[cfg(windows)]
+        {
+            let _ = project_id;
+            return Err(project_error(
+                "launch_windows_identity_unverified",
+                "Windows 项目目录身份尚未完成实机验证。",
+                "请在已验证的 Windows 构建中使用启动功能。",
+                false,
+                "stage=launch_context; platform=windows_unverified",
+            ));
+        }
+        #[cfg(not(windows))]
+        {
+            let database = self.database.clone();
+            let (project, record) = spawn_database_task("load_project_launch_context", move || {
+                let database = database.database()?;
+                database.with_connection(|connection| {
+                    Ok((
+                        load_project(connection, project_id)?,
+                        load_project_editor_record(connection, project_id)?,
+                    ))
+                })
+            })
+            .await?;
+            if project.binding.revision != expected_binding_revision {
+                return Err(project_error(
+                    "launch_binding_changed",
+                    "项目绑定在启动预览后发生变化。",
+                    "刷新项目并重新生成启动预览。",
+                    true,
+                    "stage=launch_context; binding_revision=changed",
+                ));
+            }
+            if project.binding.account_policy == AccountPolicy::CredentialPin {
+                return Err(project_error(
+                    "launch_credential_pin_unavailable",
+                    "当前 OMP 版本没有安全的凭证固定启动参数。",
+                    "改用 OMP 自动选择或固定 Profile。",
+                    false,
+                    "stage=launch_context; account_policy=credential_pin",
+                ));
+            }
+            if matches!(
+                record.authorization_status,
+                ProjectAuthorizationStatus::Revoked | ProjectAuthorizationStatus::Missing
+            ) {
+                return Err(project_error(
+                    "project_authorization_inactive",
+                    "项目目录当前没有可用授权。",
+                    "重新添加并授权项目目录后再启动 OMP。",
+                    false,
+                    "stage=launch_context; authorization=inactive",
+                ));
+            }
+            let canonical_path = self.revalidate_project_directory(&record, true).await?;
+            let stable_identity_json = record
+                .stable_identity_json
+                .ok_or_else(|| project_data_error("stable_identity_json", "missing"))?;
+            Ok(ProjectLaunchContext {
+                project,
+                canonical_path,
+                stable_identity_json,
+                _guard: guard,
+            })
+        }
     }
 
     pub async fn open_in_editor(
@@ -302,6 +404,31 @@ impl ProjectService {
         })
     }
 
+    fn acquire_project_scope(&self, project_id: i64) -> Result<ProjectScopeGuard, DomainError> {
+        let mut active = self.active_project_scopes.lock().map_err(|_| {
+            project_error(
+                "project_scope_registry_poisoned",
+                "项目操作状态不可用。",
+                "重新启动应用后重试。",
+                false,
+                "project scope registry mutex was poisoned",
+            )
+        })?;
+        if !active.insert(project_id) {
+            return Err(project_error(
+                "project_scope_busy",
+                "该项目正在执行另一项绑定或启动操作。",
+                "等待当前操作完成后重试。",
+                true,
+                "project scope already had an active mutation or launch lease",
+            ));
+        }
+        Ok(ProjectScopeGuard {
+            project_id,
+            active_projects: Arc::clone(&self.active_project_scopes),
+        })
+    }
+
     #[cfg(not(windows))]
     async fn revalidate_project_directory(
         &self,
@@ -396,6 +523,19 @@ impl ProjectService {
 struct ProjectEditorOpenGuard {
     project_id: i64,
     opening_projects: Arc<Mutex<HashSet<i64>>>,
+}
+
+struct ProjectScopeGuard {
+    project_id: i64,
+    active_projects: Arc<Mutex<HashSet<i64>>>,
+}
+
+impl Drop for ProjectScopeGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active_projects.lock() {
+            active.remove(&self.project_id);
+        }
+    }
 }
 
 impl Drop for ProjectEditorOpenGuard {
@@ -1063,7 +1203,7 @@ fn convert_git_identity(
 
 fn validate_binding_input(
     profile: &str,
-    terminal_mode: TerminalMode,
+    _terminal_mode: TerminalMode,
     account_policy: AccountPolicy,
 ) -> Result<(), DomainError> {
     if !is_valid_profile(profile) {
@@ -1073,15 +1213,6 @@ fn validate_binding_input(
             "使用 default 或小写字母/数字开头、最长 64 字符的已确认 Profile 名。",
             false,
             "stage=validate_binding; profile=invalid",
-        ));
-    }
-    if terminal_mode != TerminalMode::Embedded {
-        return Err(project_error(
-            "project_terminal_mode_unavailable",
-            "当前里程碑仅支持内嵌终端。",
-            "请选择内嵌终端；外部终端将在后续里程碑开放。",
-            false,
-            "stage=validate_binding; terminal_mode=external",
         ));
     }
     if account_policy == AccountPolicy::CredentialPin {
@@ -1507,7 +1638,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_capabilities_that_m1_does_not_support() {
+    async fn rejects_credential_pin_and_accepts_external_terminal() {
         let database_directory = tempdir().expect("database directory");
         let service = service(database_directory.path());
         let invalid_pin = service
@@ -1533,8 +1664,11 @@ mod tests {
                 },
             )
             .await
-            .expect_err("external terminal rejected");
-        assert_eq!(external.code, "project_terminal_mode_unavailable");
+            .expect("external terminal accepted");
+        assert_eq!(
+            external.project.binding.terminal_mode,
+            TerminalMode::External
+        );
     }
 
     #[tokio::test]

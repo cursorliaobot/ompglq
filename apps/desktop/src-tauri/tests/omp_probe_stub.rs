@@ -8,7 +8,9 @@ use omp_manager_lib::domain::ProbeStatus;
 fn main() {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     if !arguments.is_empty() {
-        run_stub(&arguments);
+        if is_stub_invocation(&arguments) {
+            run_stub(&arguments);
+        }
         return;
     }
 
@@ -41,6 +43,14 @@ fn main() {
         .capabilities
         .iter()
         .any(|value| value.id == "credential_pin" && !value.available));
+}
+
+fn is_stub_invocation(arguments: &[String]) -> bool {
+    matches!(
+        arguments.first().map(String::as_str),
+        Some("--version" | "--help")
+            | Some("config" | "models" | "usage" | "auth-broker" | "auth-gateway" | "update")
+    )
 }
 
 fn run_stub(arguments: &[String]) {

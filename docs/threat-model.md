@@ -159,10 +159,117 @@ bodies, source bytes, and hashes have no persistence path. One malformed file
 becomes a bounded diagnostic and cannot prevent other files from indexing.
 The React list independently validates row scope, identifiers, enums, array
 counts, timestamps, and text limits, renders values as text, searches only
-structural metadata, and mounts rows in bounded increments. It exposes no
-transcript preview. Future transcript fields must remain text-only with no raw
-HTML injection. HTML export remains an explicit OMP operation, and terminal
-bytes go to xterm.js rather than an HTML parser.
+structural metadata, and mounts rows in bounded increments. Transcript preview
+is an explicit on-demand read with a bounded latest-message window; it remains
+memory-only and text-only with no raw HTML injection. HTML export remains an
+explicit OMP operation, and terminal bytes go to xterm.js rather than an HTML
+parser.
+
+### LaunchPlan replay, scope races, and process injection
+
+**Threat:** a compromised or stale WebView changes a project binding, swaps an
+OMP binary/session file after preview, replays an execute request, supplies a
+model as shell syntax, or smuggles arbitrary environment variables into OMP.
+
+**Controls:** launch IPC accepts project/session database IDs, expected binding
+revision, closed action/model-role names, exact `provider/modelId` selectors,
+and a fixed thinking-level enum. Rust also rejects an explicit thinking level
+that the selected primary model does not advertise. Rust resolves all paths.
+Model inventory comes from the fixed
+`omp --profile <name> models --json --no-extensions` argv shape
+with bounded stdout, timeout, strict DTO projection, and no extension
+discovery. It runs under a random manager-owned HOME/cwd/agent directory with
+no Profile, project, provider-key, or behavioral `PI_*` environment, so
+`!command` secret resolution from real configuration cannot run. Custom model
+inventory is therefore deliberately incomplete. Launch argv is built in Rust
+and never passed through a shell.
+
+The prepared plan remains in a bounded Rust registry. Its public UUID is
+single-use and expires after two minutes; a per-runtime salted SHA-256 input
+fingerprint reveals no raw path. Before PTY or external-terminal spawn, Rust rechecks binding
+revision, canonical project identity, OMP entrypoint and Bun interpreter
+path/device/inode/size/nanosecond-mtime/SHA-256,
+and, for resume, session path/identity/ID/size/mtime through the authorized
+session-root reader. Any mismatch consumes the plan and requires a new
+preview. Environment values never enter the DTO or plan preview; only allowed
+names, source, and presence cross IPC. At execution, names are re-read and
+compared with the runtime-salted presence/value fingerprints captured by Rust
+during preparation. A mismatch consumes the plan. Automatic policy forwards
+credential variables only for explicitly selected providers; Profile policy
+forwards no parent provider credential. Profile selection and behavioral
+`PI_*` variables are omitted because argv is authoritative.
+
+The same checks run before an external-terminal spawn. Terminal selection is a
+closed adapter list with per-terminal argv layouts; no project/Profile/model
+value enters `sh -c`, `$TERMINAL`, `cmd /c`, or a PowerShell command string.
+Linux desktop-session variables required to reach the display are explicit
+members of the plan environment summary. External results are tagged separately
+from PTY runs and are described as detached, so the manager does not claim
+streaming, reattachment, or termination authority it does not have.
+
+Project binding updates share a project-scoped lease with launch resolution,
+and session preview/identity reads retain a Profile-scoped lease through PTY
+spawn. These leases prevent manager-owned binding/scanning races; external
+same-account path replacement remains subject to the handle limitation below.
+
+On Linux, probe/model commands execute the verified OMP entrypoint and, for the
+official shebang, its resolved Bun interpreter through inherited
+`/proc/self/fd` descriptors. PTY launch retains both handles while using the
+manager's `/proc/<pid>/fd` references, pinning their identities through `exec`
+instead of resolving `bun` again from `PATH`. `portable-pty` cwd and OMP's
+public `--resume <path>` interface remain path-based. Final identity checks and
+manager-scoped leases narrow those races but cannot prevent a same-account
+process from replacing cwd/session paths after the check and before OMP resolves
+them. No stronger guarantee is claimed until handle-derived cwd and an OMP
+resume-handle protocol are available.
+
+For Linux external terminals, `LocalTarget` passes manager-owned
+`/proc/<pid>/fd` references and retains the verified OMP/Bun handles in a
+bounded registry for 30 seconds. This covers terminal clients that hand launch
+requests to a desktop process asynchronously without retaining handles
+indefinitely. A manager crash or a terminal delaying command resolution beyond
+that lease can still make the detached launch fail; it cannot silently fall
+back to resolving a different OMP binary.
+
+### Terminal output, input, and process lifetime
+
+**Threat:** terminal output exhausts memory or injects DOM, a renderer sends
+unbounded input/resize calls, stale events attach to another run, or force-stop
+kills an unrelated process.
+
+**Controls:** Rust assigns UUID run IDs and monotonic output sequence numbers,
+frames reads at 8 KiB, retains at most 2 MiB and 4,096 frames per run, caps the
+registry, and reports replay gaps. A nonblocking 64-frame bridge bounds Tauri
+event pressure; dropped notifications remain recoverable from replay. IPC input
+is limited to 64 KiB per call and enters a bounded 16-message queue serviced by
+a dedicated writer thread, so PTY backpressure cannot block the Tauri command
+dispatcher. Large paste input is split into ordered chunks, and resize
+dimensions are bounded. The frontend verifies every event/run UUID,
+byte, sequence, timestamp/state invariant, and immutable launch context before
+writing bytes to xterm.js; terminal data is never parsed as HTML. Out-of-order
+live frames wait in a bounded pending map until replay fills their sequence gap.
+
+Graceful stop writes Ctrl+C. On Unix, force-stop addresses a negative process
+group only when the PTY-reported group leader equals the just-spawned child
+PID; otherwise it uses the portable child killer. Run state, exit code, and
+signal remain queryable after WebView reload. The UI exposes force-stop only
+after an interrupt attempt and a separate destructive confirmation. Closing a
+completed tab removes its backend run record and bounded replay; running tabs
+cannot be dismissed. A user-selectable application exit policy and verified
+Windows process-tree cleanup remain required hardening; the UI does not claim
+those are complete.
+
+Main-child exit is distinct from PTY reader EOF. The runtime drops input/control
+handles, waits briefly for EOF, and sends TERM then KILL to remaining Unix
+process-group members. Entries cannot be closed or pruned before reader EOF, so
+a detached descendant cannot be silently hidden or grow the registry beyond
+its fixed cap. Bounded probe/model subprocesses likewise use isolated Unix
+process groups and a two-second post-exit pipe-drain deadline.
+
+The backend emits run creation only after registry insertion. The WebView
+subscribes before its authoritative list read and briefly reconciles the list
+after startup, closing the race where a launch completes while the renderer is
+being reloaded.
 
 ### Log and diagnostic secret leakage
 

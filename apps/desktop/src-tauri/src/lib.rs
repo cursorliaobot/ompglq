@@ -52,9 +52,11 @@ pub fn run() {
                 )
                 .into());
             }
+            let omp_adapter: Arc<dyn adapters::omp::OmpAdapter> =
+                Arc::new(adapters::omp::CliOmpAdapter::default());
             let task_supervisor = services::TaskSupervisor::new(
                 database_runtime.clone(),
-                Arc::new(adapters::omp::CliOmpAdapter::default()),
+                omp_adapter.clone(),
                 services::TaskPolicy::default(),
             );
             if !app.manage(task_supervisor.clone()) {
@@ -71,7 +73,7 @@ pub fn run() {
                 Arc::new(adapters::targets::LocalTarget::default());
             let project_service =
                 services::ProjectService::new(database_runtime.clone(), local_target.clone());
-            if !app.manage(project_service) {
+            if !app.manage(project_service.clone()) {
                 return Err(domain::DomainError::new(
                     "project_service_state_duplicate",
                     "OMP Manager 项目服务重复初始化。",
@@ -82,14 +84,32 @@ pub fn run() {
                 .into());
             }
             let session_service =
-                services::SessionService::new(database_runtime.clone(), local_target);
-            if !app.manage(session_service) {
+                services::SessionService::new(database_runtime.clone(), local_target.clone());
+            if !app.manage(session_service.clone()) {
                 return Err(domain::DomainError::new(
                     "session_service_state_duplicate",
                     "OMP Manager 会话服务重复初始化。",
                     "重新启动应用；若问题持续，请联系支持人员。",
                     false,
                     "stage=tauri_setup; session_service=duplicate",
+                )
+                .into());
+            }
+            let launch_service = services::LaunchService::new(
+                project_service,
+                session_service,
+                task_supervisor.clone(),
+                omp_adapter,
+                local_target,
+                infrastructure::pty::PtyRuntime::default(),
+            );
+            if !app.manage(launch_service) {
+                return Err(domain::DomainError::new(
+                    "launch_service_state_duplicate",
+                    "OMP Manager 启动服务重复初始化。",
+                    "重新启动应用；若问题持续，请联系支持人员。",
+                    false,
+                    "stage=tauri_setup; launch_service=duplicate",
                 )
                 .into());
             }
@@ -122,17 +142,26 @@ pub fn run() {
             commands::add_project,
             commands::authorize_project_sessions,
             commands::cancel_operation,
+            commands::close_pty_run,
             commands::database_status,
+            commands::execute_project_launch,
             commands::get_omp_probe_operation,
+            commands::list_pty_runs,
             commands::open_project_in_editor,
+            commands::prepare_project_launch,
             commands::preview_project_session,
+            commands::project_launch_options,
             commands::project_sessions,
             commands::project_workspace,
             commands::pty_spike,
+            commands::read_pty_output,
+            commands::resize_pty,
             commands::retry_database_initialization,
             commands::scan_project_sessions,
             commands::start_omp_probe,
-            commands::update_project_binding
+            commands::terminate_pty,
+            commands::update_project_binding,
+            commands::write_pty_input
         ])
         .run(context)
         .expect("failed to run OMP Manager");

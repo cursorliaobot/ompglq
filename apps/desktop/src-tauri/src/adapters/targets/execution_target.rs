@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{Diagnostic, DomainError, LaunchPlan, PtySpikeReport};
-use crate::infrastructure::process::{OmpProbeCommand, OmpProcessOutput};
+use crate::domain::{
+    Diagnostic, DomainError, ExecutableIdentityEvidence, LaunchPlan, PtySpikeReport,
+};
+use crate::infrastructure::process::{OmpJsonOutput, OmpProbeCommand, OmpProcessOutput};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetHealth {
@@ -23,6 +25,12 @@ pub struct GitIdentity {
 pub struct CanonicalDirectory {
     pub canonical_path: PathBuf,
     pub stable_identity_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalTerminalProcess {
+    pub terminal_id: String,
+    pub process_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,12 +96,27 @@ pub trait ExecutionTarget: Send + Sync {
     async fn run_omp(
         &self,
         executable: &Path,
+        expected_identity: &ExecutableIdentityEvidence,
         command: OmpProbeCommand,
     ) -> Result<OmpProcessOutput, DomainError>;
 
+    async fn run_omp_models_json(
+        &self,
+        _executable: &Path,
+        _expected_identity: &ExecutableIdentityEvidence,
+        _profile: &str,
+        _project: &Path,
+    ) -> Result<OmpJsonOutput, DomainError> {
+        Err(DomainError::unsupported("run_omp_models_json"))
+    }
+
     async fn spawn_pty(&self) -> Result<PtySpikeReport, DomainError>;
 
-    async fn open_external_terminal(&self, _plan: &LaunchPlan) -> Result<(), DomainError> {
+    async fn open_external_terminal(
+        &self,
+        _plan: &LaunchPlan,
+        _expected_identity: &ExecutableIdentityEvidence,
+    ) -> Result<ExternalTerminalProcess, DomainError> {
         Err(DomainError::unsupported("open_external_terminal"))
     }
 

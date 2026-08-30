@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useId, useState, type FormEvent } from "react";
 
 import type {
   AccountPolicy,
@@ -11,12 +11,20 @@ import type {
   TerminalMode,
   UpdateProjectBindingRequest,
 } from "../domain/project";
+import type { ProjectSessionSummary } from "../domain/session";
 import type { ProbeDiagnostic } from "../domain/probe";
+import { useOmpLaunch } from "../hooks/useOmpLaunch";
 import { useProjects } from "../hooks/useProjects";
 import type { ProjectsState } from "../hooks/project-state";
 import type { Translate } from "../i18n";
 import type { Locale, TranslationKey } from "../i18n/resources";
 import { ProjectSessionsPanel } from "./ProjectSessionsPanel";
+
+const OmpLaunchWorkspace = lazy(() =>
+  import("./OmpLaunchWorkspace").then((module) => ({
+    default: module.OmpLaunchWorkspace,
+  })),
+);
 
 interface ProjectWorkbenchProps {
   readonly enabled: boolean;
@@ -32,6 +40,8 @@ interface ProjectWorkbenchViewProps {
   readonly addProject: (request: ProjectBindingDraft) => void;
   readonly updateProjectBinding: (request: UpdateProjectBindingRequest) => void;
   readonly openProjectInCursor: (projectId: number) => void;
+  readonly startNewSession: (project: ProjectSummary) => void;
+  readonly resumeSession: (project: ProjectSummary, session: ProjectSessionSummary) => void;
   readonly clearFeedback: () => void;
 }
 
@@ -196,6 +206,7 @@ function AddProjectForm({
   const profileListId = useId();
   const [profile, setProfile] = useState("default");
   const [accountPolicy, setAccountPolicy] = useState<"automatic" | "profile">("automatic");
+  const [terminalMode, setTerminalMode] = useState<TerminalMode>("embedded");
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -205,7 +216,7 @@ function AddProjectForm({
     }
     onAdd({
       profile: normalizedProfile,
-      terminal_mode: "embedded",
+      terminal_mode: terminalMode,
       account_policy: accountPolicy,
     });
   };
@@ -256,8 +267,18 @@ function AddProjectForm({
         </label>
         <label>
           <span>{t("project.binding.terminalMode")}</span>
-          <select value="embedded" disabled={disabled} onChange={() => undefined}>
+          <select
+            value={terminalMode}
+            disabled={disabled}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              if (value === "embedded" || value === "external") {
+                setTerminalMode(value);
+              }
+            }}
+          >
             <option value="embedded">{t("project.terminalMode.embedded")}</option>
+            <option value="external">{t("project.terminalMode.external")}</option>
           </select>
         </label>
         <button className="primary-button project-add-button" type="submit" disabled={disabled}>
@@ -290,11 +311,18 @@ function ProjectBindingEditor({
   const [accountPolicy, setAccountPolicy] = useState<"automatic" | "profile">(
     project.binding.account_policy === "profile" ? "profile" : "automatic",
   );
+  const [terminalMode, setTerminalMode] = useState<TerminalMode>(project.binding.terminal_mode);
 
   useEffect(() => {
     setProfile(project.binding.profile);
     setAccountPolicy(project.binding.account_policy === "profile" ? "profile" : "automatic");
-  }, [project.binding.account_policy, project.binding.profile, project.binding.revision]);
+    setTerminalMode(project.binding.terminal_mode);
+  }, [
+    project.binding.account_policy,
+    project.binding.profile,
+    project.binding.revision,
+    project.binding.terminal_mode,
+  ]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -306,7 +334,7 @@ function ProjectBindingEditor({
       project_id: project.id,
       expected_revision: project.binding.revision,
       profile: normalizedProfile,
-      terminal_mode: "embedded",
+      terminal_mode: terminalMode,
       account_policy: accountPolicy,
     });
   };
@@ -352,8 +380,18 @@ function ProjectBindingEditor({
         </label>
         <label>
           <span>{t("project.binding.terminalMode")}</span>
-          <select value="embedded" disabled={disabled} onChange={() => undefined}>
+          <select
+            value={terminalMode}
+            disabled={disabled}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              if (value === "embedded" || value === "external") {
+                setTerminalMode(value);
+              }
+            }}
+          >
             <option value="embedded">{t("project.terminalMode.embedded")}</option>
+            <option value="external">{t("project.terminalMode.external")}</option>
           </select>
         </label>
         <button className="secondary-button project-save-button" type="submit" disabled={disabled}>
@@ -374,6 +412,8 @@ function ProjectCard({
   knownProfiles,
   onUpdate,
   onOpen,
+  onStartNew,
+  onResume,
   t,
 }: {
   readonly project: ProjectSummary;
@@ -383,6 +423,8 @@ function ProjectCard({
   readonly knownProfiles: readonly KnownProfile[];
   readonly onUpdate: (request: UpdateProjectBindingRequest) => void;
   readonly onOpen: (projectId: number) => void;
+  readonly onStartNew: (project: ProjectSummary) => void;
+  readonly onResume: (project: ProjectSummary, session: ProjectSessionSummary) => void;
   readonly t: Translate;
 }) {
   const mutationBusy =
@@ -396,14 +438,16 @@ function ProjectCard({
     project.authorization_status === "active" ||
     project.authorization_status === "offline" ||
     project.authorization_status === "replaced";
+  const canAttemptLaunch =
+    canAttemptEditor &&
+    (project.binding.account_policy === "automatic" ||
+      project.binding.account_policy === "profile");
   const editorActionKey =
     project.authorization_status === "active"
       ? "project.editor.openCursor"
       : "project.editor.revalidateCursor";
   const bindingEditable =
-    project.binding.terminal_mode === "embedded" &&
-    (project.binding.account_policy === "automatic" ||
-      project.binding.account_policy === "profile");
+    project.binding.account_policy === "automatic" || project.binding.account_policy === "profile";
 
   return (
     <li>
@@ -462,6 +506,14 @@ function ProjectCard({
 
         <div className="project-card-actions">
           <button
+            className="primary-button"
+            type="button"
+            disabled={mutationBusy || !canAttemptLaunch}
+            onClick={() => onStartNew(project)}
+          >
+            {t("project.omp.newSession")}
+          </button>
+          <button
             className="secondary-button"
             type="button"
             disabled={mutationBusy || !canAttemptEditor}
@@ -492,8 +544,10 @@ function ProjectCard({
           profile={project.binding.profile}
           bindingRevision={project.binding.revision}
           disabled={mutationBusy}
+          resumeDisabled={!canAttemptLaunch}
           locale={locale}
           t={t}
+          onResume={(session) => onResume(project, session)}
         />
 
         {bindingEditable ? (
@@ -521,6 +575,8 @@ export function ProjectWorkbenchView({
   addProject,
   updateProjectBinding,
   openProjectInCursor,
+  startNewSession,
+  resumeSession,
   clearFeedback,
 }: ProjectWorkbenchViewProps) {
   const loadBusy = state.loadPhase === "loading";
@@ -654,6 +710,8 @@ export function ProjectWorkbenchView({
                     knownProfiles={state.knownProfiles}
                     onUpdate={updateProjectBinding}
                     onOpen={openProjectInCursor}
+                    onStartNew={startNewSession}
+                    onResume={resumeSession}
                     t={t}
                   />
                 ))}
@@ -668,16 +726,42 @@ export function ProjectWorkbenchView({
 
 export function ProjectWorkbench({ enabled, locale, t }: ProjectWorkbenchProps) {
   const controller = useProjects(enabled);
+  const launch = useOmpLaunch(enabled);
+  const showLaunchWorkspace =
+    launch.dialog.phase !== "idle" || launch.runs.length > 0 || launch.runLoadFailure !== null;
   return (
-    <ProjectWorkbenchView
-      state={controller.state}
-      locale={locale}
-      t={t}
-      refresh={controller.refresh}
-      addProject={controller.addProject}
-      updateProjectBinding={controller.updateProjectBinding}
-      openProjectInCursor={controller.openProjectInCursor}
-      clearFeedback={controller.clearFeedback}
-    />
+    <>
+      <ProjectWorkbenchView
+        state={controller.state}
+        locale={locale}
+        t={t}
+        refresh={controller.refresh}
+        addProject={controller.addProject}
+        updateProjectBinding={controller.updateProjectBinding}
+        openProjectInCursor={controller.openProjectInCursor}
+        startNewSession={(project) =>
+          launch.open({
+            projectId: project.id,
+            bindingRevision: project.binding.revision,
+            action: "new",
+            sessionIndexId: null,
+          })
+        }
+        resumeSession={(project, session) =>
+          launch.open({
+            projectId: project.id,
+            bindingRevision: project.binding.revision,
+            action: "resume",
+            sessionIndexId: session.session_index_id,
+          })
+        }
+        clearFeedback={controller.clearFeedback}
+      />
+      {showLaunchWorkspace ? (
+        <Suspense fallback={null}>
+          <OmpLaunchWorkspace controller={launch} locale={locale} t={t} />
+        </Suspense>
+      ) : null}
+    </>
   );
 }

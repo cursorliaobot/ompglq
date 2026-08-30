@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,6 +17,21 @@ pub struct ProbeReport {
     pub installation: Option<OmpInstallation>,
     pub capabilities: Vec<Capability>,
     pub diagnostics: Vec<Diagnostic>,
+    #[serde(skip)]
+    pub executable_identity: Option<ExecutableIdentityEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutableIdentityEvidence {
+    pub canonical_path: PathBuf,
+    pub size: u64,
+    pub modified_at_epoch_nanos: Option<u128>,
+    pub sha256: [u8; 32],
+    pub interpreter: Option<Box<ExecutableIdentityEvidence>>,
+    #[cfg(unix)]
+    pub device: u64,
+    #[cfg(unix)]
+    pub inode: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

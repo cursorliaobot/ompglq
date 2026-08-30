@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::adapters::targets::{ExecutionTarget, LocalTarget};
 use crate::domain::{
-    Capability, CapabilitySource, Diagnostic, DomainError, LaunchPlan, LaunchPlanInput,
-    OmpInstallation, ProbeReport, ProbeStatus,
+    Capability, CapabilitySource, Diagnostic, DomainError, ExecutableIdentityEvidence, LaunchPlan,
+    LaunchPlanInput, OmpInstallation, ProbeReport, ProbeStatus,
 };
 use crate::infrastructure::process::{
-    resolve_executable_on_path, OmpProbeCommand, OmpProcessOutput,
+    inspect_executable_file, resolve_executable_on_path, OmpProbeCommand, OmpProcessOutput,
 };
 use crate::infrastructure::secrets::redact;
 
@@ -42,6 +42,25 @@ pub struct OmpModel {
     pub reasoning: bool,
     pub thinking: Option<Vec<String>>,
     pub input: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsJson {
+    models: Vec<ModelJson>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelJson {
+    provider: String,
+    id: String,
+    selector: String,
+    name: String,
+    context_window: Option<u64>,
+    max_tokens: Option<u64>,
+    reasoning: bool,
+    thinking: Option<Vec<String>>,
+    input: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +106,7 @@ pub trait OmpAdapter: Send + Sync {
     async fn list_models(
         &self,
         _installation: &OmpInstallation,
+        _expected_identity: &ExecutableIdentityEvidence,
         _profile: &str,
         _project: &Path,
     ) -> Result<Vec<OmpModel>, DomainError> {
@@ -144,9 +164,22 @@ impl OmpAdapter for CliOmpAdapter {
         let mut selected = None;
 
         for candidate in candidates {
+            let identity = match inspect_executable_file(&candidate) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    diagnostics.push(Diagnostic::new(
+                        "omp_executable_identity_unavailable",
+                        "无法建立候选 OMP 的完整文件身份。",
+                        "检查文件权限或重新选择 OMP 可执行文件。",
+                        true,
+                        redact(&error.to_string()),
+                    ));
+                    continue;
+                }
+            };
             let output = match self
                 .target
-                .run_omp(&candidate, OmpProbeCommand::Version)
+                .run_omp(&candidate, &identity, OmpProbeCommand::Version)
                 .await
             {
                 Ok(output) => output,
@@ -163,7 +196,7 @@ impl OmpAdapter for CliOmpAdapter {
                 continue;
             }
             if let Some(version) = parse_version(&output.stdout_redacted) {
-                selected = Some((candidate, version));
+                selected = Some((candidate, version, identity));
                 break;
             }
             diagnostics.push(Diagnostic::new(
@@ -175,7 +208,7 @@ impl OmpAdapter for CliOmpAdapter {
             ));
         }
 
-        let Some((executable, version)) = selected else {
+        let Some((executable, version, executable_identity)) = selected else {
             diagnostics.push(Diagnostic::new(
                 "omp_not_found",
                 "未找到可验证的 OMP 可执行文件。",
@@ -189,6 +222,7 @@ impl OmpAdapter for CliOmpAdapter {
                 installation: None,
                 capabilities: Vec::new(),
                 diagnostics,
+                executable_identity: None,
             });
         };
 
@@ -203,13 +237,29 @@ impl OmpAdapter for CliOmpAdapter {
         ];
         let mut outputs = HashMap::new();
         for command in commands {
-            match self.target.run_omp(&executable, command).await {
+            match self
+                .target
+                .run_omp(&executable, &executable_identity, command)
+                .await
+            {
                 Ok(output) if output.success => {
                     outputs.insert(command, output);
                 }
                 Ok(output) => diagnostics.push(command_failure_diagnostic(command, &output)),
                 Err(error) => diagnostics.push(error.into()),
             }
+        }
+        if !matches!(
+            inspect_executable_file(&executable),
+            Ok(current) if current == executable_identity
+        ) {
+            return Err(DomainError::new(
+                "omp_executable_changed_during_probe",
+                "OMP 可执行文件在能力检测期间发生变化。",
+                "停止更新 OMP 后重新检测。",
+                true,
+                "executable identity changed across the capability probe",
+            ));
         }
 
         let capabilities = map_capabilities(&outputs);
@@ -230,15 +280,14 @@ impl OmpAdapter for CliOmpAdapter {
         } else {
             ProbeStatus::Limited
         };
-        let metadata = std::fs::metadata(&executable).ok();
         let installation = OmpInstallation {
             executable_path: executable.to_string_lossy().into_owned(),
             version,
             architecture: std::env::consts::ARCH.to_owned(),
             probed_at_epoch_ms: epoch_millis(SystemTime::now()),
-            binary_modified_at_epoch_ms: metadata
-                .and_then(|value| value.modified().ok())
-                .map(epoch_millis),
+            binary_modified_at_epoch_ms: executable_identity
+                .modified_at_epoch_nanos
+                .map(|value| (value / 1_000_000).min(u128::from(u64::MAX)) as u64),
         };
 
         Ok(ProbeReport {
@@ -247,8 +296,117 @@ impl OmpAdapter for CliOmpAdapter {
             installation: Some(installation),
             capabilities,
             diagnostics,
+            executable_identity: Some(executable_identity),
         })
     }
+
+    async fn list_models(
+        &self,
+        installation: &OmpInstallation,
+        expected_identity: &ExecutableIdentityEvidence,
+        profile: &str,
+        project: &Path,
+    ) -> Result<Vec<OmpModel>, DomainError> {
+        let output = self
+            .target
+            .run_omp_models_json(
+                Path::new(&installation.executable_path),
+                expected_identity,
+                profile,
+                project,
+            )
+            .await?;
+        if output.stdout_truncated {
+            return Err(DomainError::new(
+                "omp_models_output_too_large",
+                "OMP 模型列表超过管理器的读取上限。",
+                "减少自定义模型数量后重试，或继续使用 OMP 默认模型。",
+                false,
+                "stage=models_decode; stdout=truncated",
+            ));
+        }
+        let wire: ModelsJson = serde_json::from_slice(&output.stdout).map_err(|error| {
+            DomainError::new(
+                "omp_models_json_invalid",
+                "OMP 返回了无法识别的模型列表。",
+                "重新检测 OMP；若版本已变化，请等待兼容适配。",
+                false,
+                redact(&format!(
+                    "stage=models_decode; error={error}; stderr_truncated={}; stderr={}",
+                    output.stderr_truncated, output.stderr_redacted
+                )),
+            )
+        })?;
+        if wire.models.len() > 4_096 {
+            return Err(DomainError::new(
+                "omp_models_count_exceeded",
+                "OMP 模型数量超过管理器的安全上限。",
+                "减少自定义模型数量后重试。",
+                false,
+                format!("stage=models_decode; count={}", wire.models.len()),
+            ));
+        }
+
+        let mut selectors = HashSet::new();
+        wire.models
+            .into_iter()
+            .map(|model| validate_model(model, &mut selectors))
+            .collect()
+    }
+
+    async fn build_launch_plan(&self, input: LaunchPlanInput) -> Result<LaunchPlan, DomainError> {
+        LaunchPlan::new(input)
+    }
+}
+
+fn validate_model(
+    model: ModelJson,
+    selectors: &mut HashSet<String>,
+) -> Result<OmpModel, DomainError> {
+    let text_is_valid = |value: &str, maximum: usize| {
+        !value.trim().is_empty()
+            && value.len() <= maximum
+            && !value.chars().any(|character| {
+                character.is_control()
+                    || matches!(
+                        character,
+                        '\u{202a}'
+                            ..='\u{202e}' | '\u{2066}'
+                            ..='\u{2069}'
+                    )
+            })
+    };
+    if !text_is_valid(&model.provider, 128)
+        || !text_is_valid(&model.id, 512)
+        || !text_is_valid(&model.selector, 768)
+        || !text_is_valid(&model.name, 512)
+        || model.selector != format!("{}/{}", model.provider, model.id)
+        || !selectors.insert(model.selector.clone())
+        || model.thinking.as_ref().is_some_and(|values| {
+            values.len() > 32 || values.iter().any(|value| !text_is_valid(value, 32))
+        })
+        || model.input.len() > 16
+        || model.input.iter().any(|value| !text_is_valid(value, 32))
+    {
+        return Err(DomainError::new(
+            "omp_model_entry_invalid",
+            "OMP 模型列表包含不兼容的条目。",
+            "重新检测 OMP；若版本已变化，请等待兼容适配。",
+            false,
+            "stage=models_decode; entry=invalid",
+        ));
+    }
+    Ok(OmpModel {
+        provider: model.provider,
+        id: model.id,
+        selector: model.selector,
+        name: model.name,
+        context_window: model.context_window,
+        max_tokens: model.max_tokens,
+        reasoning: model.reasoning,
+        thinking: model.thinking,
+        input: model.input,
+    })
 }
 
 fn discover_candidates(
@@ -363,6 +521,41 @@ fn map_capabilities(outputs: &HashMap<OmpProbeCommand, OmpProcessOutput>) -> Vec
             "omp --help advertises --cwd",
         ),
         token_capability(
+            "model_default",
+            CapabilitySource::Cli,
+            root,
+            &["--model"],
+            "omp --help advertises --model",
+        ),
+        token_capability(
+            "model_smol",
+            CapabilitySource::Cli,
+            root,
+            &["--smol"],
+            "omp --help advertises --smol",
+        ),
+        token_capability(
+            "model_slow",
+            CapabilitySource::Cli,
+            root,
+            &["--slow"],
+            "omp --help advertises --slow",
+        ),
+        token_capability(
+            "model_plan",
+            CapabilitySource::Cli,
+            root,
+            &["--plan"],
+            "omp --help advertises --plan",
+        ),
+        token_capability(
+            "thinking",
+            CapabilitySource::Cli,
+            root,
+            &["--thinking"],
+            "omp --help advertises --thinking",
+        ),
+        token_capability(
             "session_resume",
             CapabilitySource::Cli,
             root,
@@ -401,8 +594,8 @@ fn map_capabilities(outputs: &HashMap<OmpProbeCommand, OmpProcessOutput>) -> Vec
             "models_json",
             CapabilitySource::Cli,
             models,
-            &["--json"],
-            "omp models --help advertises --json",
+            &["--json", "--no-extensions"],
+            "omp models --help advertises --json and --no-extensions",
         ),
         token_capability(
             "usage",
@@ -538,7 +731,10 @@ mod tests {
             .any(|value| value.id == "profile" && value.available));
         assert!(capabilities
             .iter()
-            .any(|value| value.id == "models_json" && value.available));
+            .any(|value| value.id == "models_json" && !value.available));
+        assert!(capabilities
+            .iter()
+            .any(|value| value.id == "model_default" && !value.available));
         assert!(capabilities
             .iter()
             .any(|value| value.id == "session_fork" && !value.available));

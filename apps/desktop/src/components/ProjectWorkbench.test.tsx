@@ -67,6 +67,8 @@ function render(projectState: ProjectsState): string {
       addProject={vi.fn()}
       updateProjectBinding={vi.fn()}
       openProjectInCursor={vi.fn()}
+      startNewSession={vi.fn()}
+      resumeSession={vi.fn()}
       clearFeedback={vi.fn()}
     />,
   );
@@ -92,7 +94,7 @@ describe("ProjectWorkbenchView", () => {
     expect(empty).toContain("发现范围不完整");
   });
 
-  it("shows only supported binding controls and the server revision", () => {
+  it("shows supported terminal controls and the server revision", () => {
     const markup = render(state({ projects: [project()] }));
 
     expect(markup).toContain("/work/项目 &amp; tools");
@@ -102,9 +104,9 @@ describe("ProjectWorkbenchView", () => {
     expect(markup).toContain("由 OMP 自动选择");
     expect(markup).toContain("固定到当前 Profile");
     expect(markup).toContain("内嵌终端");
+    expect(markup).toContain("外部终端");
     expect(markup).toContain("项目会话");
     expect(markup).not.toContain("固定具体凭证");
-    expect(markup).not.toContain("外部终端");
   });
 
   it("exposes a keyboard-accessible fixed Cursor action only for active authorization", () => {
@@ -169,7 +171,7 @@ describe("ProjectWorkbenchView", () => {
     expect(failure).toContain("cursor_not_found");
   });
 
-  it("preserves unsupported legacy binding values instead of silently downgrading them", () => {
+  it("preserves an unsupported credential pin without downgrading its external mode", () => {
     const base = project();
     const markup = render(
       state({
@@ -189,6 +191,31 @@ describe("ProjectWorkbenchView", () => {
     expect(markup).toContain("固定具体凭证");
     expect(markup).toContain("已保持原值");
     expect(markup).not.toContain("保存绑定");
+    expect(markup).toContain(
+      '<button class="primary-button" type="button" disabled="">用 OMP 新建会话</button>',
+    );
+  });
+
+  it("keeps launch and binding controls enabled for an external-terminal project", () => {
+    const base = project();
+    const markup = render(
+      state({
+        projects: [
+          project({
+            binding: {
+              ...base.binding,
+              terminal_mode: "external",
+            },
+          }),
+        ],
+      }),
+    );
+
+    expect(markup).toContain("外部终端");
+    expect(markup).toContain("保存绑定");
+    expect(markup).toContain(
+      '<button class="primary-button" type="button">用 OMP 新建会话</button>',
+    );
   });
 
   it("keeps project cards visible beside a structured revision conflict", () => {
